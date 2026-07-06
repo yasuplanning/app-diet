@@ -50,16 +50,16 @@ function round(n) {
 }
 
 // 食材をidで引けるマップを作る
-export function loadFoodsMap() {
-  const rows = db.prepare('SELECT * FROM foods').all();
+export async function loadFoodsMap() {
+  const rows = await db.prepare('SELECT * FROM foods').all();
   const map = {};
   for (const r of rows) map[r.id] = r;
   return map;
 }
 
 // サプリをidで引けるマップを作る
-export function loadSupplementsMap() {
-  const rows = db.prepare('SELECT * FROM supplements').all();
+export async function loadSupplementsMap() {
+  const rows = await db.prepare('SELECT * FROM supplements').all();
   const map = {};
   for (const r of rows) map[r.id] = r;
   return map;
@@ -138,9 +138,9 @@ export function daysBetween(start, end) {
 }
 
 // 日次集計
-export function daily(date) {
-  const foodsById = loadFoodsMap();
-  const meals = getMealsByDate(date);
+export async function daily(date) {
+  const foodsById = await loadFoodsMap();
+  const meals = await getMealsByDate(date);
   const mealsOut = meals.map((m) => ({
     ...m,
     isUnregistered: !!m.isUnregistered,
@@ -158,8 +158,8 @@ export function daily(date) {
   }
 
   // サプリ（別管理・個数ベース）
-  const suppById = loadSupplementsMap();
-  const suppLogs = getSupplementLogsByDate(date);
+  const suppById = await loadSupplementsMap();
+  const suppLogs = await getSupplementLogsByDate(date);
   const supplementsOut = suppLogs.map((l) => ({
     ...l,
     nutrients: computeSupplementLog(l, l.supplementId ? suppById[l.supplementId] : null),
@@ -180,15 +180,15 @@ export function daily(date) {
 }
 
 // 期間の日別系列 + 合計 + 平均
-export function series(start, end) {
-  const foodsById = loadFoodsMap();
-  const meals = getMealsInRange(start, end);
+export async function series(start, end) {
+  const foodsById = await loadFoodsMap();
+  const meals = await getMealsInRange(start, end);
   const byDate = {};
   for (const m of meals) (byDate[m.date] ||= []).push(m);
 
   // サプリ（別管理・個数ベース）を日付ごとにまとめる
-  const suppById = loadSupplementsMap();
-  const suppLogs = getSupplementLogsInRange(start, end);
+  const suppById = await loadSupplementsMap();
+  const suppLogs = await getSupplementLogsInRange(start, end);
   const suppByDate = {};
   for (const l of suppLogs) (suppByDate[l.date] ||= []).push(l);
 
@@ -222,20 +222,27 @@ export function series(start, end) {
 
 // 食材別の摂取頻度（回数と合計グラム）
 export function foodFrequency(start, end, limit = 20) {
-  const rows = db.prepare(`
-    SELECT foodName, COUNT(*) AS count, SUM(grams) AS totalGrams
+  return db.prepare(`
+    SELECT foodName, COUNT(*)::int AS count, SUM(grams)::float AS totalGrams
     FROM meals WHERE date >= ? AND date <= ?
     GROUP BY foodName ORDER BY count DESC, totalGrams DESC LIMIT ?
   `).all(start, end, limit);
-  return rows;
 }
 
-// よく使う食材（クイック入力用）: 直近の使用頻度順
+// よく使う食材（クイック入力用）: 直近の使用頻度順。
+// Postgres は GROUP BY に無い素のカラム(foodId, grams)を選べないため、
+// DISTINCT ON で「食材ごとの最新1件」の foodId/grams を代表値として拾い、
+// 回数(count)と最終日(lastDate)はウィンドウ関数で同時に算出する。
 export function frequentFoods(limit = 12) {
   return db.prepare(`
-    SELECT m.foodName, m.foodId, m.grams, COUNT(*) AS count, MAX(m.date) AS lastDate
-    FROM meals m
-    GROUP BY m.foodName
+    SELECT * FROM (
+      SELECT DISTINCT ON (foodName)
+             foodName, foodId, grams,
+             (COUNT(*) OVER (PARTITION BY foodName))::int AS count,
+             MAX(date) OVER (PARTITION BY foodName) AS lastDate
+      FROM meals
+      ORDER BY foodName, date DESC, id DESC
+    ) t
     ORDER BY count DESC, lastDate DESC
     LIMIT ?
   `).all(limit);

@@ -4,9 +4,13 @@
   "description": "毎日の食事から栄養素を自動計算・集計・可視化する栄養管理Webアプリ",
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node --env-file-if-exists=.env server.js",
+    "setup": "node --env-file-if-exists=.env scripts/setup.js"
   },
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4"
   }
 }

@@ -6,9 +6,7 @@ import { NUTRIENT_KEYS } from './nutrients.js';
 import { SEED_FOODS } from './seed.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-// DATA_DIR を指定するとそこへ保存（Railway等の永続ボリューム用）。
-// 未指定ならリポジトリ直下の data/（ローカル開発時の既定）。
-const dataDir = process.env.DATA_DIR || join(__dirname, '..', 'data');
+const dataDir = join(__dirname, '..', 'data');
 mkdirSync(dataDir, { recursive: true });
 
 export const db = new DatabaseSync(join(dataDir, 'diet.db'));

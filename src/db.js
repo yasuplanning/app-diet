@@ -12,11 +12,17 @@ import { neon } from '@neondatabase/serverless';
 import { NUTRIENT_KEYS } from './nutrients.js';
 import { SEED_FOODS } from './seed.js';
 
-if (!process.env.DATABASE_URL) {
-  throw new Error('環境変数 DATABASE_URL が設定されていません（Neon Postgres の接続文字列）');
+// 接続は遅延生成する。import 時点で throw すると Vercel Functions が初期化段階で
+// クラッシュ（FUNCTION_INVOCATION_FAILED）してしまい、原因が分かる 500 JSON を返せないため。
+let _sql = null;
+function getSql() {
+  if (_sql) return _sql;
+  if (!process.env.DATABASE_URL) {
+    throw new Error('環境変数 DATABASE_URL が設定されていません（Neon Postgres の接続文字列）');
+  }
+  _sql = neon(process.env.DATABASE_URL);
+  return _sql;
 }
-
-const sql = neon(process.env.DATABASE_URL);
 
 // `?` → `$1, $2, ...`（SQLite 記法を Postgres 記法へ）
 function toPg(text) {
@@ -50,15 +56,15 @@ export function prepare(text) {
   const q = toPg(text);
   return {
     async get(...params) {
-      const rows = await sql(q, params);
+      const rows = await getSql()(q, params);
       return remap(rows[0]);
     },
     async all(...params) {
-      const rows = await sql(q, params);
+      const rows = await getSql()(q, params);
       return rows.map(remap);
     },
     async run(...params) {
-      const rows = await sql(q, params);
+      const rows = await getSql()(q, params);
       // INSERT ... RETURNING id なら rows[0].id、UPDATE/DELETE ... RETURNING id なら rows.length が件数。
       return { rows: rows.map(remap), changes: rows.length, lastInsertRowid: rows[0]?.id };
     },
@@ -66,7 +72,7 @@ export function prepare(text) {
 }
 
 export async function exec(text) {
-  await sql(text, []);
+  await getSql()(text, []);
 }
 
 // テーブル作成 + 初期データ投入（冪等）。npm run setup / GET|POST /api/setup から呼ぶ。

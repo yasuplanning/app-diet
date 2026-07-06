@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>栄養管理アプリ</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🍚 栄養管理</div>
+    <nav class="nav" id="nav">
+      <a href="#/dashboard">ホーム</a>
+      <a href="#/input">食事入力</a>
+      <a href="#/records">記録</a>
+      <a href="#/history">履歴</a>
+      <a href="#/foods">食材マスタ</a>
+      <a href="#/supplements">サプリ</a>
+      <a href="#/unregistered">未登録</a>
+      <a href="#/weekly">週次</a>
+      <a href="#/monthly">月次</a>
+      <a href="#/goals">目標</a>
+    </nav>
+  </header>
+
+  <main id="app" class="container">読み込み中…</main>
+
+  <div id="modal-root"></div>
+  <div id="toast" class="toast"></div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

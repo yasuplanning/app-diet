@@ -1,0 +1,12 @@
+{
+  "name": "app-diet",
+  "version": "1.0.0",
+  "description": "毎日の食事から栄養素を自動計算・集計・可視化する栄養管理Webアプリ",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

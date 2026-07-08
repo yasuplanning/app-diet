@@ -503,11 +503,9 @@ export async function handleApi(req, res, url) {
 }
 
 // ---------- server ----------
-// Vercel はこのファイルをエントリポイントとして起動し、process.env.PORT で待ち受ける
-// HTTP サーバーへ全リクエストを委譲する（Node.js サーバー方式）。静的配信も /api/* も
-// この1プロセスが処理する。ローカルでも同じコードがそのまま動く。
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+// 全リクエストを捌くハンドラ。静的配信も /api/* もこの1関数が処理する。
+async function requestListener(req, res) {
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
     if (url.pathname.startsWith('/api/')) {
       await handleApi(req, res, url);
@@ -518,10 +516,16 @@ const server = http.createServer(async (req, res) => {
     console.error(e);
     if (!res.headersSent) sendError(res, 500, e.message || 'サーバーエラー');
   }
-});
+}
 
-// Vercel の Node.js サーバービルダーは PORT を渡してこのプロセスが listen するのを待つ。
-// ローカルでも同じく listen する（PORT 未指定なら 3000）。常に起動する点が重要。
-server.listen(PORT, () => {
-  console.log(`\n  栄養管理アプリ起動: http://localhost:${PORT}\n`);
-});
+// Vercel は root エントリポイント（server.js）の default export を、
+// 全リクエストを受けるハンドラ関数として呼び出す（Fluid / @vercel/node 方式）。
+export default requestListener;
+
+// ローカル開発時のみ自前で listen する。Vercel 上ではラッパーが requestListener を
+// 直接呼ぶため listen は不要（自前 listen はラッパーと競合し FUNCTION_INVOCATION_FAILED を招く）。
+if (!process.env.VERCEL) {
+  http.createServer(requestListener).listen(PORT, () => {
+    console.log(`\n  栄養管理アプリ起動: http://localhost:${PORT}\n`);
+  });
+}

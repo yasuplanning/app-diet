@@ -1,12 +1,13 @@
 # デプロイ手順（Vercel + Neon Postgres）
 
-このアプリは Vercel の **Node.js サーバー方式**で動きます。
-- エントリポイント … ルート直下の `server.js`（Vercel が起動し `process.env.PORT` で待ち受け）
-- 静的ファイル（`public/`）と API（`/api/*`）… どちらも `server.js` の1プロセスが処理
+このアプリは Vercel で動きます。
+- エントリポイント … ルート直下の `server.js`。全リクエストを捌くハンドラを `export default` しており、Vercel（Fluid / @vercel/node）がそれを関数として呼ぶ
+- 静的ファイル（`public/`）は Vercel が CDN 配信。`/` や `/api/*` はハンドラが処理
 - DB … Neon Postgres（`@neondatabase/serverless` で HTTP 接続。`process.env.DATABASE_URL`）
 
 `node:sqlite` / ローカルDBファイルは廃止済みです。
-`server.js` は常に `listen()` します（Vercel はこのサーバーに全リクエストを委譲するため）。
+Vercel 上では `server.js` は `listen()` せず、`export default` したハンドラが呼ばれます
+（自前 listen はラッパーと競合し `FUNCTION_INVOCATION_FAILED` の原因になるため、`process.env.VERCEL` 未設定のローカル時のみ listen します）。
 
 ## 環境変数
 
@@ -59,7 +60,7 @@ npm run setup        # 初回のみ
 npm start            # http://localhost:3000
 ```
 
-ローカルでもVercel上でも同じ `server.js` が `process.env.PORT`（未指定なら3000）で `listen()` します。
+ローカルでは `server.js` が `process.env.PORT`（未指定なら3000）で `listen()` します。Vercel 上では listen せず `export default` ハンドラが呼ばれます。
 
 ## 補足・注意
 

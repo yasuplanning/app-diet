@@ -2,7 +2,7 @@
 
 このアプリは Vercel のサーバーレス構成で動きます。
 - 静的ファイル（`public/`）… Vercel が CDN から配信
-- API（`/api/*`）… Vercel Functions（`api/[...path].js` が `server.js` の `handleApi` に委譲）
+- API（`/api/*`）… Vercel Functions（`api/index.js` が `local-server.js` の `handleApi` に委譲）
 - DB … Neon Postgres（`@neondatabase/serverless` で HTTP 接続。`process.env.DATABASE_URL`）
 
 `node:sqlite` / ローカルDBファイルは廃止済みです。
@@ -58,7 +58,7 @@ npm run setup        # 初回のみ
 npm start            # http://localhost:3000
 ```
 
-`server.js` はローカル時のみ `listen()` します（Vercel上では `VERCEL` 環境変数を検知して常駐しません）。
+`local-server.js` はローカル時のみ `listen()` します（Vercel上では `VERCEL` 環境変数を検知して常駐しません）。
 
 ## 補足・注意
 

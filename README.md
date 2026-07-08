@@ -4,22 +4,25 @@
 1日・1週間・1か月単位で集計・可視化するWebアプリです。
 
 ## 特徴
-- **依存パッケージゼロ** — Node.js 標準機能のみ（`node:http` + 組み込み `node:sqlite`）。`npm install` 不要。
+- **Vercel + Neon Postgres** — サーバーレス構成。DB は `@neondatabase/serverless` で HTTP 接続。
 - ビルド不要のシンプルなフロントエンド（バニラJS / レスポンシブ対応）。
 
 ## 動作要件
-- Node.js **22 以上**（組み込み `node:sqlite` を使用。確認: `node --version`）
+- Node.js **22 以上**（確認: `node --version`）
+- Neon Postgres の接続文字列（`DATABASE_URL`）
 
-## 起動
+## 起動（ローカル開発）
 ```bash
-node server.js
-# または
-npm start
+# .env に DATABASE_URL=<Neonの接続文字列> を記載
+npm install
+npm run setup   # 初回のみ: テーブル作成 + 食材マスタ22件を投入
+npm start       # または npm run dev
 ```
 起動後、ブラウザで http://localhost:3000 を開きます。
-初回起動時に `data/diet.db`（SQLite）を作成し、22件の食材マスタを自動投入します。
 
-ポートを変える場合: `PORT=8080 node server.js`
+ポートを変える場合: `PORT=8080 npm start`
+
+デプロイ手順は [DEPLOY.md](./DEPLOY.md) を参照してください。
 
 ## LLM推定（未登録食材の栄養推定）
 未登録食材を「🤖 推定して追加」すると、Anthropic API で100gあたり栄養素の**推定値**を下書き作成します。
@@ -29,7 +32,7 @@ npm start
 ```bash
 # PowerShell
 $env:ANTHROPIC_API_KEY = "sk-ant-..."
-node server.js
+npm start
 ```
 使用モデルは既定で `claude-haiku-4-5-20251001`。`ANTHROPIC_MODEL` で変更可能。
 
@@ -71,21 +74,21 @@ node server.js
 - **エクスポート**: 開始日・終了日を指定して ZIP を書き出し（食事・消費カロリー・体組成が期間対象。食材マスタと目標は常に全件同梱）。標準的なZIP形式で、Windowsの「すべて展開」でも開けます。
 - **インポート**: エクスポートしたZIPを取り込み。食材は「名前」で突き合わせ、食事は完全一致する重複を自動スキップ。日付が重複する消費カロリー・体組成は「スキップ／上書き」を選択可能。目標設定はチェックした場合のみ取り込み。
 
-## 自動バックアップ
-サーバー起動のたびに、その時点の `data/diet.db` を `data/backups/diet-<日時>.db` へ自動コピーします（直近20世代を保持）。
-誤削除・破損時は、`data/backups/` 内の任意のファイルを `data/diet.db` にコピーし直せば復元できます。
+## バックアップ・移行
+データの永続化は Neon Postgres が担います。手動のバックアップは「目標設定」画面の
+**エクスポート**（ZIP）で行い、必要に応じて **インポート** で復元・移行できます。
 
 ## 構成
 ```
-server.js          HTTPサーバー + ルーティング + APIハンドラ
+local-server.js    ローカル開発用HTTPサーバー + ルーティング + APIハンドラ（handleApi）
+api/index.js       Vercel Functions エントリ（handleApi へ委譲）
+vercel.json        /api/* を api/index へ流す rewrite
 src/nutrients.js   栄養素定義（19項目）・食事区分・カテゴリ
 src/seed.js        初期食材データ（100gあたり）
-src/db.js          SQLiteスキーマ + シード
+src/db.js          Neon Postgres 接続 + スキーマ + シード
 src/nutrition.js   栄養計算・集計（null=未登録の扱いを含む）
 src/llm.js         LLM推定（Anthropic Messages API）
 src/zip.js         依存なしのZIP読み書き（node:zlib のみ）
 src/dataio.js      エクスポート/インポート処理
 public/            index.html / styles.css / app.js（SPA）
-data/diet.db       SQLite（初回起動時に自動生成）
-data/backups/      起動時の自動バックアップ（直近20世代）
 ```

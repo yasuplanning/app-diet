@@ -3,11 +3,11 @@
 // （rewrite 後の req.url が元パスか宛先パスかは環境差があるため、クエリ経由が最も確実）。
 //
 // 重要: トップレベル import を置かず、handler 内の動的 import を try/catch で包む。
-// server.js 系の読み込みで例外が出ても FUNCTION_INVOCATION_FAILED で潰れず、
+// local-server.js の読み込みで例外が出ても FUNCTION_INVOCATION_FAILED で潰れず、
 // 原因の分かる 500 JSON（スタックトレース）を返せる。
 export default async function handler(req, res) {
   try {
-    const { handleApi } = await import('../server.js');
+    const { handleApi } = await import('../local-server.js');
     const base = `http://${req.headers.host || 'localhost'}`;
     const orig = new URL(req.url, base);
 

@@ -502,7 +502,7 @@ export async function handleApi(req, res, url) {
   return sendError(res, 404, 'APIが見つかりません');
 }
 
-// ---------- server（ローカル開発用。Vercel では api/[...path].js が handleApi を呼ぶ）----------
+// ---------- server（ローカル開発専用。Vercel では api/index.js が handleApi を呼ぶ）----------
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   try {

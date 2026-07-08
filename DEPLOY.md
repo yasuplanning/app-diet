@@ -1,11 +1,12 @@
 # デプロイ手順（Vercel + Neon Postgres）
 
-このアプリは Vercel のサーバーレス構成で動きます。
-- 静的ファイル（`public/`）… Vercel が CDN から配信
-- API（`/api/*`）… Vercel Functions（`api/index.js` が `local-server.js` の `handleApi` に委譲）
+このアプリは Vercel の **Node.js サーバー方式**で動きます。
+- エントリポイント … ルート直下の `server.js`（Vercel が起動し `process.env.PORT` で待ち受け）
+- 静的ファイル（`public/`）と API（`/api/*`）… どちらも `server.js` の1プロセスが処理
 - DB … Neon Postgres（`@neondatabase/serverless` で HTTP 接続。`process.env.DATABASE_URL`）
 
 `node:sqlite` / ローカルDBファイルは廃止済みです。
+`server.js` は常に `listen()` します（Vercel はこのサーバーに全リクエストを委譲するため）。
 
 ## 環境変数
 
@@ -58,7 +59,7 @@ npm run setup        # 初回のみ
 npm start            # http://localhost:3000
 ```
 
-`local-server.js` はローカル時のみ `listen()` します（Vercel上では `VERCEL` 環境変数を検知して常駐しません）。
+ローカルでもVercel上でも同じ `server.js` が `process.env.PORT`（未指定なら3000）で `listen()` します。
 
 ## 補足・注意
 

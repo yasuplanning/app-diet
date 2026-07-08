@@ -80,9 +80,7 @@ npm start
 
 ## 構成
 ```
-local-server.js    ローカル開発用HTTPサーバー + ルーティング + APIハンドラ（handleApi）
-api/index.js       Vercel Functions エントリ（handleApi へ委譲）
-vercel.json        /api/* を api/index へ流す rewrite
+server.js          HTTPサーバー + ルーティング + APIハンドラ（ローカル/Vercel共通のエントリ）
 src/nutrients.js   栄養素定義（19項目）・食事区分・カテゴリ
 src/seed.js        初期食材データ（100gあたり）
 src/db.js          Neon Postgres 接続 + スキーマ + シード

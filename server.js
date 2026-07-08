@@ -502,7 +502,10 @@ export async function handleApi(req, res, url) {
   return sendError(res, 404, 'APIが見つかりません');
 }
 
-// ---------- server（ローカル開発専用。Vercel では api/index.js が handleApi を呼ぶ）----------
+// ---------- server ----------
+// Vercel はこのファイルをエントリポイントとして起動し、process.env.PORT で待ち受ける
+// HTTP サーバーへ全リクエストを委譲する（Node.js サーバー方式）。静的配信も /api/* も
+// この1プロセスが処理する。ローカルでも同じコードがそのまま動く。
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   try {
@@ -517,9 +520,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-// Vercel（サーバーレス）では listen しない。ローカル実行時のみ常駐起動。
-if (!process.env.VERCEL) {
-  server.listen(PORT, () => {
-    console.log(`\n  栄養管理アプリ起動: http://localhost:${PORT}\n`);
-  });
-}
+// Vercel の Node.js サーバービルダーは PORT を渡してこのプロセスが listen するのを待つ。
+// ローカルでも同じく listen する（PORT 未指定なら 3000）。常に起動する点が重要。
+server.listen(PORT, () => {
+  console.log(`\n  栄養管理アプリ起動: http://localhost:${PORT}\n`);
+});

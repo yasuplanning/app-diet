@@ -655,14 +655,15 @@ function openSupplementEditor(supp = {}) {
 // ======================================================
 async function viewUnregistered() {
   const rows = await api.get('/api/meals/unregistered');
-  app.innerHTML = `<h1>未登録食材の確認</h1>
+  app.innerHTML = `<div class="flex-between"><h1>未登録食材の確認</h1><button class="ghost" id="bulk-food">📋 まとめて貼り付け</button></div>
     <div class="card">
-      <p class="muted">食材マスタに存在しない食材です。登録すると過去の記録にも栄養素が反映されます。</p>
+      <p class="muted">食材マスタに存在しない食材です。登録すると過去の記録にも栄養素が反映されます。個別に「推定して登録」「手動登録」するほか、AI等で生成したデータを「まとめて貼り付け」で一括登録できます。</p>
       ${rows.length ? `<div class="table-wrap"><table><thead><tr><th>食材名</th><th class="num">記録回数</th><th>最終記録日</th><th></th></tr></thead><tbody>
         ${rows.map((r) => `<tr><td>${esc(r.foodName)}</td><td class="num">${r.count}</td><td>${esc(r.lastDate)}</td>
           <td><button class="sm" data-llm="${esc(r.foodName)}">🤖推定して登録</button> <button class="ghost sm" data-manual="${esc(r.foodName)}">手動登録</button></td></tr>`).join('')}
       </tbody></table></div>` : '<div class="empty">未登録食材はありません 🎉</div>'}
     </div>`;
+  $('#bulk-food').onclick = () => openBulkFoodEditor();
   app.querySelectorAll('[data-manual]').forEach((b) => b.onclick = () => openFoodEditor({ name: b.dataset.manual }));
   app.querySelectorAll('[data-llm]').forEach((b) => b.onclick = async () => {
     b.textContent = '推定中…'; b.disabled = true;

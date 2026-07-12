@@ -113,9 +113,9 @@ async function viewDashboard() {
     };
   });
 
-  // 不足・過剰チェック
-  const check = META.nutrients.map((n) => {
-    const o = t[n.key]; if (!o) return '';
+  // 栄養素の不足・過剰チェック（指定日の集計に対して判定するテーブル行を返す）
+  const checkRows = (total) => META.nutrients.map((n) => {
+    const o = total[n.key]; if (!o) return '';
     const ref = (n.key === 'calories' && g.targetCalories) || (n.key === 'protein' && g.targetProtein)
       || (n.key === 'fiber' && g.targetFiber) || (n.key === 'salt' && g.saltLimit) || n.ref;
     if (!ref) return '';
@@ -131,10 +131,6 @@ async function viewDashboard() {
     return `<tr><td>${n.label}</td><td class="num">${nutrientCell(o)}</td><td class="num muted">${ref}${n.unit}</td><td class="${cls}">${status}</td></tr>`;
   }).join('');
 
-  const freq = d.foodFrequency.length
-    ? d.foodFrequency.map((f) => `<tr><td>${esc(f.foodName)}</td><td class="num">${f.count}回</td><td class="num muted">${num(f.totalGrams, 0)}g</td></tr>`).join('')
-    : '<tr><td colspan="3" class="muted">記録なし</td></tr>';
-
   app.innerHTML = `
     <h1>ホーム / ダッシュボード <span class="muted small">(${date})</span></h1>
 
@@ -147,23 +143,25 @@ async function viewDashboard() {
       <p class="small muted">プラス＝摂取が消費を上回る／マイナス＝消費が上回る。消費カロリー未入力の日は線に表示されません。体重・体脂肪率は各系列内の増減が見えるよう縦軸を拡大しています。</p>
     </div>
 
-    <div class="grid grid-2">
-      <div class="stat"><div class="label">直近30日 平均カロリー</div><div class="value">${num(d.month.average.calories.value, 0)} <small>kcal/日</small></div><div class="sub muted">記録 ${d.month.recordedDays} 日</div></div>
-      <div class="stat"><div class="label">直近30日 平均タンパク質</div><div class="value">${num(d.month.average.protein.value, 0)} <small>g/日</small></div><div class="sub muted">記録 ${d.month.recordedDays} 日</div></div>
-    </div>
-
-    <div class="grid grid-2">
-      <div class="card"><h2>栄養素の不足・過剰チェック</h2>
-        <div class="table-wrap"><table><thead><tr><th>栄養素</th><th class="num">今日</th><th class="num">目安</th><th>判定</th></tr></thead><tbody>${check}</tbody></table></div>
-        <p class="small muted">目安は目標設定値または一般的な推奨量。食塩は上限。</p>
+    <div class="card">
+      <div class="flex-between"><h2>栄養素の不足・過剰チェック</h2>
+        <div><label class="small muted">日付 </label><input type="date" id="check-date" value="${date}" max="${date}"></div>
       </div>
-      <div class="card"><h2>食材別 摂取頻度 (直近30日)</h2>
-        <div class="table-wrap"><table><thead><tr><th>食材</th><th class="num">回数</th><th class="num">合計</th></tr></thead><tbody>${freq}</tbody></table></div>
-      </div>
+      <div class="table-wrap"><table><thead><tr><th>栄養素</th><th class="num">摂取量</th><th class="num">目安</th><th>判定</th></tr></thead><tbody id="check-body">${checkRows(t)}</tbody></table></div>
+      <p class="small muted">選択した日の摂取量を目安（目標設定値または一般的な推奨量。食塩は上限）と比較します。</p>
     </div>
-
-    <div class="card"><h2>今日の主要栄養素一覧</h2>${nutrientTable(t)}</div>
   `;
+
+  // 日付を変えたらその日の栄養集計を取り直してチェック表だけ更新
+  const cd = $('#check-date');
+  cd.onchange = async () => {
+    const body = $('#check-body');
+    body.innerHTML = '<tr><td colspan="4" class="muted">読み込み中…</td></tr>';
+    try {
+      const day = await api.get(`/api/nutrition/daily?date=${cd.value}`);
+      body.innerHTML = checkRows(day.total);
+    } catch (e) { toast(e.message, true); }
+  };
 }
 
 // 過去1週間の体重・体脂肪率を、日ごとに細い縦棒2本で描く。

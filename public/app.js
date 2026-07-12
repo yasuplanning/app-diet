@@ -531,18 +531,20 @@ function openFoodEditor(food = {}, banner = '') {
 }
 
 // 貼り付け一括登録モーダル（AI生成データ等をコピペ一発で登録）
-function openBulkFoodEditor() {
-  const example = `食材名：ハンバーグ
-カロリー
-約230 kcal
-タンパク質
-約15.5 g
-脂質
-約16.5 g
-…`;
+// name を渡すと「特定の未登録食材に紐づける」モード: 食材名行なしの栄養データだけを
+// 貼り付けて、その名前で登録する（スマホで分量のみ記録→後でPCでマスタ更新する動線）。
+function openBulkFoodEditor(name = '') {
+  const single = !!name;
+  const example = single
+    ? `カロリー\n約230 kcal\nタンパク質\n約15.5 g\n脂質\n約16.5 g\n…`
+    : `食材名：ハンバーグ\nカロリー\n約230 kcal\nタンパク質\n約15.5 g\n脂質\n約16.5 g\n…`;
+  const heading = single ? `「${esc(name)}」を貼り付けで登録` : 'まとめて貼り付け登録';
+  const desc = single
+    ? `未登録食材「<b>${esc(name)}</b>」の栄養データを貼り付けて登録します。<b>食材名の行は不要</b>です（栄養素名と数値の行だけ＝2行目以降を貼り付けてください）。数値は<b>100gあたり</b>として扱われ、登録すると過去の記録にも自動で反映されます。`
+    : `AI等で生成した栄養データを、下の欄に貼り付けて登録します。<b>「食材名：○○」</b>で始まる区切りごとに1食材として登録され、複数食材をまとめて貼り付けできます。数値は<b>100gあたり</b>として扱われます。同名の食材は栄養素が上書き更新されます。`;
   const node = el(`<div class="modal">
-    <div class="flex-between"><h2>まとめて貼り付け登録</h2><button class="ghost sm" id="bf-close">✕</button></div>
-    <p class="small muted">AI等で生成した栄養データを、下の欄に貼り付けて登録します。<b>「食材名：○○」</b>で始まる区切りごとに1食材として登録され、複数食材をまとめて貼り付けできます。数値は<b>100gあたり</b>として扱われます。同名の食材は栄養素が上書き更新されます。</p>
+    <div class="flex-between"><h2>${heading}</h2><button class="ghost sm" id="bf-close">✕</button></div>
+    <p class="small muted">${desc}</p>
     <label>貼り付けテキスト</label>
     <textarea id="bf-text" rows="12" style="width:100%;font-family:monospace" placeholder="${esc(example)}"></textarea>
     <div class="row" style="margin-top:16px"><button id="bf-save">登録</button><button class="ghost" id="bf-cancel">キャンセル</button></div>
@@ -554,7 +556,7 @@ function openBulkFoodEditor() {
     const text = node.querySelector('#bf-text').value;
     if (!text.trim()) { toast('テキストを貼り付けてください', true); return; }
     try {
-      const r = await api.post('/api/foods/bulk', { text });
+      const r = await api.post('/api/foods/bulk', single ? { name, text } : { text });
       closeModal();
       const parts = [];
       if (r.added) parts.push(`新規 ${r.added} 件`);
@@ -655,15 +657,15 @@ function openSupplementEditor(supp = {}) {
 // ======================================================
 async function viewUnregistered() {
   const rows = await api.get('/api/meals/unregistered');
-  app.innerHTML = `<div class="flex-between"><h1>未登録食材の確認</h1><button class="ghost" id="bulk-food">📋 まとめて貼り付け</button></div>
+  app.innerHTML = `<h1>未登録食材の確認</h1>
     <div class="card">
-      <p class="muted">食材マスタに存在しない食材です。登録すると過去の記録にも栄養素が反映されます。個別に「推定して登録」「手動登録」するほか、AI等で生成したデータを「まとめて貼り付け」で一括登録できます。</p>
+      <p class="muted">食材マスタに存在しない食材です。登録すると過去の記録にも栄養素が反映されます。スマホ等では分量だけ記録しておき、後でこの画面から「まとめて貼り付け」（AI生成データを食材名なしで貼り付け）や「推定して登録」で栄養データを埋められます。</p>
       ${rows.length ? `<div class="table-wrap"><table><thead><tr><th>食材名</th><th class="num">記録回数</th><th>最終記録日</th><th></th></tr></thead><tbody>
         ${rows.map((r) => `<tr><td>${esc(r.foodName)}</td><td class="num">${r.count}</td><td>${esc(r.lastDate)}</td>
-          <td><button class="sm" data-llm="${esc(r.foodName)}">🤖推定して登録</button> <button class="ghost sm" data-manual="${esc(r.foodName)}">手動登録</button></td></tr>`).join('')}
+          <td><button class="sm" data-bulk="${esc(r.foodName)}">📋貼り付け</button> <button class="sm" data-llm="${esc(r.foodName)}">🤖推定して登録</button> <button class="ghost sm" data-manual="${esc(r.foodName)}">手動登録</button></td></tr>`).join('')}
       </tbody></table></div>` : '<div class="empty">未登録食材はありません 🎉</div>'}
     </div>`;
-  $('#bulk-food').onclick = () => openBulkFoodEditor();
+  app.querySelectorAll('[data-bulk]').forEach((b) => b.onclick = () => openBulkFoodEditor(b.dataset.bulk));
   app.querySelectorAll('[data-manual]').forEach((b) => b.onclick = () => openFoodEditor({ name: b.dataset.manual }));
   app.querySelectorAll('[data-llm]').forEach((b) => b.onclick = async () => {
     b.textContent = '推定中…'; b.disabled = true;

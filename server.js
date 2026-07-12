@@ -160,9 +160,14 @@ export async function handleApi(req, res, url) {
   // 貼り付けテキストからの一括登録（AI生成データ等をコピペ一発で登録）
   if (p === '/api/foods/bulk' && method === 'POST') {
     const body = await readBody(req);
-    const parsed = parseFoodsText(body.text || '');
+    // name 指定時: 未登録食材の行から「食材名を書かず栄養データだけ」貼り付けて
+    // その名前で1食材として登録する動線（スマホで分量のみ記録→後でPCでマスタ更新）。
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const parsed = parseFoodsText(body.text || '', name ? { defaultName: name } : {});
     if (!parsed.length) {
-      return sendError(res, 400, '「食材名：○○」の形式で始まるデータを認識できませんでした');
+      return sendError(res, 400, name
+        ? '栄養データを認識できませんでした（栄養素名と数値の行を貼り付けてください）'
+        : '「食材名：○○」の形式で始まるデータを認識できませんでした');
     }
     const cols = ['name', 'aliases', ...NUTRIENT_KEYS, 'dataSource', 'note', 'isEstimated', 'createdAt', 'updatedAt'];
     const results = [];

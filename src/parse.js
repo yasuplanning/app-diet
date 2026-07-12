@@ -72,10 +72,15 @@ function parseInline(line) {
 
 // 貼り付けテキストを解析し、[{ name, values, matched }] を返す。
 // values は全 NUTRIENT_KEYS を含み、認識できなかった栄養素は null。
-export function parseFoodsText(text) {
+//
+// opts.defaultName を渡すと、食材名ヘッダより前（＝先頭）の栄養素行を
+// その名前の食材として扱う。未登録食材の行から「食材名を書かずに2行目以降だけ」
+// 貼り付けて登録する動線で使用。この場合、栄養素が1つも取れなかった空ブロックは除外する。
+export function parseFoodsText(text, opts = {}) {
   const lines = String(text || '').split(/\r?\n/);
   const foods = [];
-  let cur = null;
+  // defaultName 指定時は先頭を無名ブロックではなくその名前の食材として開始する。
+  let cur = opts.defaultName ? { name: opts.defaultName, values: {} } : null;
   let pending = null; // 直前に現れた栄養素ラベルのキー
 
   const push = () => {
@@ -119,7 +124,11 @@ export function parseFoodsText(text) {
   }
   push();
 
-  return foods.filter((f) => f.name);
+  let result = foods.filter((f) => f.name);
+  // defaultName 指定時: 貼り付け本文に食材名行が混ざっていた場合に生じる
+  // 「名前だけで栄養素0」の空ブロックを除外する。
+  if (opts.defaultName) result = result.filter((f) => f.matched > 0);
+  return result;
 }
 
 export default { parseFoodsText };

@@ -274,9 +274,8 @@ async function viewInput(params) {
         <button id="btn-add">記録する</button>
         <button class="ghost" id="btn-copy">前日の食事をこの日にコピー</button>
       </div>
+      <p class="small muted" style="margin-top:10px">記録した内容は<a href="#/history">履歴</a>で確認・削除できます。</p>
     </div>
-
-    <div class="card" id="today-meals"></div>
   `;
 
   // --- suggest ---
@@ -334,7 +333,6 @@ async function viewInput(params) {
         supplementId: c.dataset.suppid, supplementName: c.dataset.name, units,
       });
       toast(`${c.dataset.name} を ${num(units, 0)}個 記録しました`);
-      loadTodayMeals($('#f-date').value);
     } catch (e) { toast(e.message, true); }
   }));
 
@@ -355,7 +353,6 @@ async function viewInput(params) {
       toast('記録しました');
       foodInput.value = ''; foodId.value = ''; $('#f-grams').value = ''; $('#f-memo').value = '';
       foodInput.focus();
-      loadTodayMeals($('#f-date').value);
       if (r.unregistered) promptRegister(foodName);
     } catch (e) { toast(e.message, true); }
   }
@@ -364,57 +361,9 @@ async function viewInput(params) {
   $('#btn-copy').addEventListener('click', async () => {
     const to = $('#f-date').value; const from = addDays(to, -1);
     if (!confirm(`${from} の食事を ${to} にコピーします。よろしいですか？`)) return;
-    try { const r = await api.post('/api/meals/copy', { from, to }); toast(`${r.copied} 件コピーしました`); loadTodayMeals(to); }
+    try { const r = await api.post('/api/meals/copy', { from, to }); toast(`${r.copied} 件コピーしました`); }
     catch (e) { toast(e.message, true); }
   });
-
-  $('#f-date').addEventListener('change', () => loadTodayMeals($('#f-date').value));
-  loadTodayMeals(date);
-
-  async function loadTodayMeals(d) {
-    const [data, energy] = await Promise.all([
-      api.get(`/api/nutrition/daily?date=${d}`),
-      api.get(`/api/energy?date=${d}`),
-    ]);
-    const burn = energy && energy.burnedCalories != null ? energy.burnedCalories : null;
-
-    const box = $('#today-meals');
-    const rows = data.meals.length ? data.meals.map((m) => `
-      <tr>
-        <td>${esc(m.time || '')}</td><td>${esc(m.mealType)}</td>
-        <td>${esc(m.foodName)} ${m.isUnregistered ? '<span class="pill unreg">未登録</span>' : ''}</td>
-        <td class="num">${num(m.grams, 0)}g</td>
-        <td class="num">${nutrientCell(m.nutrients.calories)}</td>
-        <td><button class="ghost sm" data-del="${m.id}">削除</button></td>
-      </tr>`).join('') : '<tr><td colspan="6" class="muted">この日の記録はまだありません</td></tr>';
-    const intake = data.total.calories.value;
-    const net = burn != null
-      ? `摂取 ${num(intake, 0)} − 消費 ${num(burn, 0)} = <b class="${intake - burn > 0 ? 'status-over' : 'status-ok'}">${num(intake - burn, 0)}</b> kcal`
-      : `摂取 <b>${num(intake, 0)}</b> kcal <span class="muted small">(消費カロリーは「記録」画面で入力)</span>`;
-
-    const supps = data.supplements || [];
-    const suppSection = supps.length ? `
-      <h3 style="margin-top:16px">💊 サプリ</h3>
-      <div class="table-wrap"><table><thead><tr><th>時刻</th><th>サプリ</th><th class="num">個数</th><th class="num">kcal</th><th></th></tr></thead><tbody>
-      ${supps.map((s) => `<tr>
-        <td>${esc(s.time || '')}</td><td>${esc(s.supplementName)}</td>
-        <td class="num">${num(s.units, 0)}個</td>
-        <td class="num">${nutrientCell(s.nutrients.calories)}</td>
-        <td><button class="ghost sm" data-suppdel="${s.id}">削除</button></td>
-      </tr>`).join('')}
-      </tbody></table></div>` : '';
-
-    box.innerHTML = `<div class="flex-between"><h2>${d} の記録</h2><div>${net} ／ タンパク質 ${num(data.total.protein.value, 0)}g</div></div>
-      <div class="table-wrap"><table><thead><tr><th>時刻</th><th>区分</th><th>食材</th><th class="num">量</th><th class="num">kcal</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
-      ${suppSection}
-      <p class="small muted" style="margin-top:8px">※ 上部の合計（摂取kcal・タンパク質）には食事とサプリの両方が含まれます。</p>`;
-    box.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', async () => {
-      await api.del(`/api/meals/${b.dataset.del}`); toast('削除しました'); loadTodayMeals(d);
-    }));
-    box.querySelectorAll('[data-suppdel]').forEach((b) => b.addEventListener('click', async () => {
-      await api.del(`/api/supplement-logs/${b.dataset.suppdel}`); toast('削除しました'); loadTodayMeals(d);
-    }));
-  }
 }
 
 // 未登録食材 → 登録を促す

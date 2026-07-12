@@ -17,7 +17,7 @@ const api = {
 };
 
 // ---------- state ----------
-let META = null; // { nutrients, mealTypes, categories, today }
+let META = null; // { nutrients, mealTypes, today }
 const app = document.getElementById('app');
 
 // ---------- utils ----------
@@ -265,7 +265,7 @@ async function viewInput(params) {
     if (!sugItems.length) { suggestBox.style.display = 'none'; return; }
     suggestBox.innerHTML = sugItems.map((it, i) => it.__new
       ? `<div class="new ${i === sugActive ? 'active' : ''}" data-i="${i}">＋「${esc(it.name)}」を未登録食材として使う</div>`
-      : `<div class="${i === sugActive ? 'active' : ''}" data-i="${i}">${esc(it.name)} <span class="muted small">${num(it.calories, 0)}kcal/100g・${esc(it.category || '')}</span></div>`).join('');
+      : `<div class="${i === sugActive ? 'active' : ''}" data-i="${i}">${esc(it.name)} <span class="muted small">${num(it.calories, 0)}kcal/100g</span></div>`).join('');
     suggestBox.style.display = 'block';
     suggestBox.querySelectorAll('div').forEach((d) => d.addEventListener('mousedown', (e) => { e.preventDefault(); pickSuggest(Number(d.dataset.i)); }));
   };
@@ -457,14 +457,13 @@ async function viewFoods(params) {
   const search = params.get('q') || '';
   const foods = await api.get(`/api/foods${search ? `?search=${encodeURIComponent(search)}` : ''}`);
   app.innerHTML = `
-    <div class="flex-between"><h1>食材マスタ (${foods.length})</h1><button id="new-food">＋ 新規食材</button></div>
+    <div class="flex-between"><h1>食材マスタ (${foods.length})</h1><div class="row"><button class="ghost" id="bulk-food">📋 まとめて貼り付け</button><button id="new-food">＋ 新規食材</button></div></div>
     <div class="card">
       <input type="search" id="food-search" placeholder="食材名・別名で検索" value="${esc(search)}">
       <div class="table-wrap" style="margin-top:12px"><table>
-        <thead><tr><th>食材名</th><th>カテゴリ</th><th class="num">kcal</th><th class="num">P</th><th class="num">F</th><th class="num">C</th><th></th></tr></thead>
+        <thead><tr><th>食材名</th><th class="num">kcal</th><th class="num">P</th><th class="num">F</th><th class="num">C</th><th></th></tr></thead>
         <tbody>${foods.map((f) => `<tr>
           <td>${esc(f.name)} ${f.isEstimated ? '<span class="pill est">推定値</span>' : ''}<div class="muted small">${esc(f.aliases || '')}</div></td>
-          <td>${esc(f.category || '')}</td>
           <td class="num">${num(f.calories, 0)}</td><td class="num">${num(f.protein)}</td><td class="num">${num(f.fat)}</td><td class="num">${num(f.carbs)}</td>
           <td><button class="ghost sm" data-edit="${f.id}">編集</button> <button class="ghost sm danger" data-del="${f.id}">削除</button></td>
         </tr>`).join('')}</tbody>
@@ -474,6 +473,7 @@ async function viewFoods(params) {
   const searchEl = $('#food-search');
   let tm; searchEl.addEventListener('input', () => { clearTimeout(tm); tm = setTimeout(() => { location.hash = `#/foods?q=${encodeURIComponent(searchEl.value)}`; }, 300); });
   $('#new-food').onclick = () => openFoodEditor({});
+  $('#bulk-food').onclick = () => openBulkFoodEditor();
   app.querySelectorAll('[data-edit]').forEach((b) => b.onclick = async () => {
     const f = (await api.get('/api/foods')).find((x) => x.id == b.dataset.edit); openFoodEditor(f);
   });
@@ -496,8 +496,7 @@ function openFoodEditor(food = {}, banner = '') {
     <div class="flex-between"><h2>${isEdit ? '食材を編集' : '食材を追加'}</h2><button class="ghost sm" id="fe-close">✕</button></div>
     ${banner ? `<p class="pill est" style="display:block;padding:8px 12px">${esc(banner)}</p>` : ''}
     <div class="row">
-      <div style="flex:2"><label>食材名 *</label><input id="fe-name" value="${esc(food.name || '')}"></div>
-      <div><label>カテゴリ</label><select id="fe-cat"><option value="">—</option>${META.categories.map((c) => `<option ${food.category === c ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
+      <div style="flex:1"><label>食材名 *</label><input id="fe-name" value="${esc(food.name || '')}"></div>
     </div>
     <label>別名・表記ゆれ（カンマ区切り）</label><input id="fe-alias" value="${esc(food.aliases || '')}" placeholder="例: ごはん,ご飯,ライス">
     ${sections}
@@ -512,7 +511,6 @@ function openFoodEditor(food = {}, banner = '') {
   node.querySelector('#fe-save').onclick = async () => {
     const payload = {
       name: node.querySelector('#fe-name').value.trim(),
-      category: node.querySelector('#fe-cat').value,
       aliases: node.querySelector('#fe-alias').value,
       dataSource: node.querySelector('#fe-src').value,
       note: node.querySelector('#fe-note').value,
@@ -526,6 +524,43 @@ function openFoodEditor(food = {}, banner = '') {
       else r = await api.post('/api/foods', payload);
       closeModal();
       toast(isEdit ? '更新しました' : `追加しました${r.relinked ? `（未登録記録 ${r.relinked} 件を紐付け）` : ''}`);
+      router();
+    } catch (e) { toast(e.message, true); }
+  };
+  openModal(node);
+}
+
+// 貼り付け一括登録モーダル（AI生成データ等をコピペ一発で登録）
+function openBulkFoodEditor() {
+  const example = `食材名：ハンバーグ
+カロリー
+約230 kcal
+タンパク質
+約15.5 g
+脂質
+約16.5 g
+…`;
+  const node = el(`<div class="modal">
+    <div class="flex-between"><h2>まとめて貼り付け登録</h2><button class="ghost sm" id="bf-close">✕</button></div>
+    <p class="small muted">AI等で生成した栄養データを、下の欄に貼り付けて登録します。<b>「食材名：○○」</b>で始まる区切りごとに1食材として登録され、複数食材をまとめて貼り付けできます。数値は<b>100gあたり</b>として扱われます。同名の食材は栄養素が上書き更新されます。</p>
+    <label>貼り付けテキスト</label>
+    <textarea id="bf-text" rows="12" style="width:100%;font-family:monospace" placeholder="${esc(example)}"></textarea>
+    <div class="row" style="margin-top:16px"><button id="bf-save">登録</button><button class="ghost" id="bf-cancel">キャンセル</button></div>
+  </div>`);
+
+  node.querySelector('#bf-close').onclick = closeModal;
+  node.querySelector('#bf-cancel').onclick = closeModal;
+  node.querySelector('#bf-save').onclick = async () => {
+    const text = node.querySelector('#bf-text').value;
+    if (!text.trim()) { toast('テキストを貼り付けてください', true); return; }
+    try {
+      const r = await api.post('/api/foods/bulk', { text });
+      closeModal();
+      const parts = [];
+      if (r.added) parts.push(`新規 ${r.added} 件`);
+      if (r.updated) parts.push(`更新 ${r.updated} 件`);
+      if (r.relinked) parts.push(`未登録記録 ${r.relinked} 件を紐付け`);
+      toast(`登録しました（${parts.join(' / ') || '0 件'}）`);
       router();
     } catch (e) { toast(e.message, true); }
   };

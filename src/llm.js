@@ -5,13 +5,13 @@ const API_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001';
 
 // 未登録食材について 100gあたり栄養素の推定値ドラフトを返す。
-// 返り値は { estimated:true, source, draft:{name, category, ...nutrients} }
+// 返り値は { estimated:true, source, draft:{name, ...nutrients} }
 export async function estimateFood(name, hint = '') {
   const apiKey = process.env.ANTHROPIC_API_KEY;
 
   // APIキーが無い場合: 空ドラフト（全て null）を返し、手動入力を促す。
   if (!apiKey) {
-    const draft = { name, category: '', note: 'LLM未接続のため自動推定できません。手動で入力してください。' };
+    const draft = { name, note: 'LLM未接続のため自動推定できません。手動で入力してください。' };
     for (const k of NUTRIENT_KEYS) draft[k] = null;
     return {
       estimated: true,
@@ -28,7 +28,6 @@ ${hint ? `補足: ${hint}\n` : ''}
 以下のJSONオブジェクトだけを出力してください（前後の説明文やコードフェンスは不要）。
 値は100gあたりの数値。単位は指定どおり。不明な項目は null にしてください。
 {
-  "category": "主食/主菜/副菜/汁物/果物/乳製品/ナッツ・種実/菓子/調味料/海藻/その他 のいずれか",
 ${spec}
 }`;
 
@@ -55,7 +54,7 @@ ${spec}
   const textOut = (data.content || []).filter((c) => c.type === 'text').map((c) => c.text).join('');
   const parsed = extractJson(textOut);
 
-  const draft = { name, category: typeof parsed.category === 'string' ? parsed.category : '', note: `LLM推定（${MODEL}）` };
+  const draft = { name, note: `LLM推定（${MODEL}）` };
   for (const k of NUTRIENT_KEYS) {
     const v = parsed[k];
     draft[k] = typeof v === 'number' && isFinite(v) ? v : null;

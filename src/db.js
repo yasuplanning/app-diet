@@ -84,7 +84,6 @@ export async function setup() {
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL,
       aliases TEXT,
-      category TEXT,
       ${nutrientCols},
       dataSource TEXT,
       note TEXT,
@@ -159,6 +158,10 @@ export async function setup() {
   ];
   for (const s of statements) await exec(s);
 
+  // マイグレーション: 旧スキーマの category カラムを削除（計算に用いないため廃止）。
+  // 新規テーブルには存在しないので IF EXISTS で no-op。
+  await exec('ALTER TABLE foods DROP COLUMN IF EXISTS category');
+
   // goals は必ず1行存在させる
   const goalCount = await prepare('SELECT COUNT(*)::int AS c FROM goals').get();
   if (Number(goalCount.c) === 0) {
@@ -170,7 +173,7 @@ export async function setup() {
   const foodCount = await prepare('SELECT COUNT(*)::int AS c FROM foods').get();
   let seededFoods = 0;
   if (Number(foodCount.c) === 0) {
-    const cols = ['name', 'aliases', 'category', ...NUTRIENT_KEYS, 'dataSource', 'note', 'isEstimated', 'createdAt', 'updatedAt'];
+    const cols = ['name', 'aliases', ...NUTRIENT_KEYS, 'dataSource', 'note', 'isEstimated', 'createdAt', 'updatedAt'];
     const placeholders = cols.map(() => '?').join(', ');
     const stmt = prepare(`INSERT INTO foods (${cols.join(', ')}) VALUES (${placeholders})`);
     const now = new Date().toISOString();

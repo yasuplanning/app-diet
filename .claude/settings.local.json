@@ -47,7 +47,11 @@
       "Bash(unzip -p m.zip manifest.json)",
       "Bash(unzip -p r.zip manifest.json)",
       "Bash(git init *)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git branch *)",
+      "Bash(git remote *)",
+      "Bash(git push *)"
     ]
   }
 }

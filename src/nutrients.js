@@ -27,5 +27,3 @@ export const NUTRIENTS = [
 export const NUTRIENT_KEYS = NUTRIENTS.map((n) => n.key);
 
 export const MEAL_TYPES = ['朝食', '昼食', '夕食', '間食', 'その他'];
-
-export const CATEGORIES = ['主食', '主菜', '副菜', '汁物', '果物', '乳製品', 'ナッツ・種実', '菓子', '調味料', '海藻', 'その他'];

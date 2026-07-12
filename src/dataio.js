@@ -125,7 +125,7 @@ export async function applyImport(zipBuffer, opts = {}) {
   };
 
   // --- foods（名前で突き合わせ）---
-  const foodCols = ['name', 'aliases', 'category', ...NUTRIENT_KEYS, 'dataSource', 'note', 'isEstimated', 'createdAt', 'updatedAt'];
+  const foodCols = ['name', 'aliases', ...NUTRIENT_KEYS, 'dataSource', 'note', 'isEstimated', 'createdAt', 'updatedAt'];
   const insertFood = db.prepare(`INSERT INTO foods (${foodCols.join(',')}) VALUES (${foodCols.map(() => '?').join(',')}) RETURNING id`);
   const nameToId = {};
   for (const f of impFoods) {
@@ -133,8 +133,8 @@ export async function applyImport(zipBuffer, opts = {}) {
     if (existing) {
       nameToId[f.name] = existing.id;
       if (mode === 'overwrite') {
-        const sets = ['aliases=?', 'category=?', ...NUTRIENT_KEYS.map((k) => `${k}=?`), 'dataSource=?', 'note=?', 'isEstimated=?', 'updatedAt=?'];
-        const params = [f.aliases ?? '', f.category ?? '', ...NUTRIENT_KEYS.map((k) => (f[k] ?? null)), f.dataSource ?? '', f.note ?? '', f.isEstimated ? 1 : 0, now(), existing.id];
+        const sets = ['aliases=?', ...NUTRIENT_KEYS.map((k) => `${k}=?`), 'dataSource=?', 'note=?', 'isEstimated=?', 'updatedAt=?'];
+        const params = [f.aliases ?? '', ...NUTRIENT_KEYS.map((k) => (f[k] ?? null)), f.dataSource ?? '', f.note ?? '', f.isEstimated ? 1 : 0, now(), existing.id];
         await db.prepare(`UPDATE foods SET ${sets.join(',')} WHERE id=?`).run(...params);
         summary.foods.updated++;
       } else {

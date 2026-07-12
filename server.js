@@ -3,12 +3,13 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, normalize, extname } from 'node:path';
 import db, { setup } from './src/db.js';
-import { NUTRIENTS, NUTRIENT_KEYS, MEAL_TYPES, CATEGORIES } from './src/nutrients.js';
+import { NUTRIENTS, NUTRIENT_KEYS, MEAL_TYPES } from './src/nutrients.js';
 import {
   daily, series, foodFrequency, frequentFoods, isoDate, addDays,
 } from './src/nutrition.js';
 import { estimateFood } from './src/llm.js';
 import { buildExport, applyImport } from './src/dataio.js';
+import { parseFoodsText } from './src/parse.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, 'public');
@@ -113,7 +114,7 @@ export async function handleApi(req, res, url) {
 
   // メタ情報
   if (p === '/api/meta' && method === 'GET') {
-    return sendJson(res, 200, { nutrients: NUTRIENTS, mealTypes: MEAL_TYPES, categories: CATEGORIES, today: isoDate(new Date()) });
+    return sendJson(res, 200, { nutrients: NUTRIENTS, mealTypes: MEAL_TYPES, today: isoDate(new Date()) });
   }
 
   // 初回セットアップ（テーブル作成 + seed。冪等）
@@ -130,7 +131,7 @@ export async function handleApi(req, res, url) {
       rows = await db.prepare('SELECT * FROM foods WHERE name LIKE ? OR aliases LIKE ? ORDER BY name LIMIT 30')
         .all(`%${search}%`, `%${search}%`);
     } else {
-      rows = await db.prepare('SELECT * FROM foods ORDER BY category, name').all();
+      rows = await db.prepare('SELECT * FROM foods ORDER BY name').all();
     }
     return sendJson(res, 200, rows.map((r) => ({ ...r, isEstimated: !!r.isEstimated })));
   }
@@ -156,13 +157,49 @@ export async function handleApi(req, res, url) {
     }
   }
 
+  // 貼り付けテキストからの一括登録（AI生成データ等をコピペ一発で登録）
+  if (p === '/api/foods/bulk' && method === 'POST') {
+    const body = await readBody(req);
+    const parsed = parseFoodsText(body.text || '');
+    if (!parsed.length) {
+      return sendError(res, 400, '「食材名：○○」の形式で始まるデータを認識できませんでした');
+    }
+    const cols = ['name', 'aliases', ...NUTRIENT_KEYS, 'dataSource', 'note', 'isEstimated', 'createdAt', 'updatedAt'];
+    const results = [];
+    let added = 0, updated = 0, relinkedTotal = 0;
+    for (const f of parsed) {
+      const existing = await db.prepare('SELECT * FROM foods WHERE name = ?').get(f.name);
+      if (existing) {
+        const sets = [...NUTRIENT_KEYS.map((k) => `${k} = ?`), 'updatedAt = ?'];
+        const params = [...NUTRIENT_KEYS.map((k) => f.values[k]), now(), existing.id];
+        await db.prepare(`UPDATE foods SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+        updated++;
+        results.push({ name: f.name, action: 'updated', matched: f.matched });
+      } else {
+        const params = [
+          f.name, '',
+          ...NUTRIENT_KEYS.map((k) => f.values[k]),
+          '貼り付け登録', '', 0, now(), now(),
+        ];
+        const info = await db.prepare(`INSERT INTO foods (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')}) RETURNING id`).run(...params);
+        // 同名の未登録食事を新しい食材にひも付け直す
+        const relinked = await db.prepare('UPDATE meals SET foodId = ?, isUnregistered = 0, updatedAt = ? WHERE foodName = ? AND isUnregistered = 1 RETURNING id')
+          .run(info.lastInsertRowid, now(), f.name);
+        relinkedTotal += relinked.changes;
+        added++;
+        results.push({ name: f.name, action: 'added', matched: f.matched, relinked: relinked.changes });
+      }
+    }
+    return sendJson(res, 201, { added, updated, relinked: relinkedTotal, results });
+  }
+
   if (p === '/api/foods' && method === 'POST') {
     const body = await readBody(req);
     if (!body.name) return sendError(res, 400, 'name は必須です');
     const vals = foodValues(body);
-    const cols = ['name', 'aliases', 'category', ...NUTRIENT_KEYS, 'dataSource', 'note', 'isEstimated', 'createdAt', 'updatedAt'];
+    const cols = ['name', 'aliases', ...NUTRIENT_KEYS, 'dataSource', 'note', 'isEstimated', 'createdAt', 'updatedAt'];
     const params = [
-      body.name, body.aliases || '', body.category || '',
+      body.name, body.aliases || '',
       ...NUTRIENT_KEYS.map((k) => vals[k]),
       body.dataSource || '', body.note || '', body.isEstimated ? 1 : 0, now(), now(),
     ];
@@ -184,11 +221,11 @@ export async function handleApi(req, res, url) {
     if (method === 'PUT') {
       const body = await readBody(req);
       const vals = foodValues(body);
-      const sets = ['name = ?', 'aliases = ?', 'category = ?',
+      const sets = ['name = ?', 'aliases = ?',
         ...NUTRIENT_KEYS.map((k) => `${k} = ?`),
         'dataSource = ?', 'note = ?', 'isEstimated = ?', 'updatedAt = ?'];
       const params = [
-        body.name ?? existing.name, body.aliases ?? existing.aliases, body.category ?? existing.category,
+        body.name ?? existing.name, body.aliases ?? existing.aliases,
         ...NUTRIENT_KEYS.map((k) => (k in body ? vals[k] : existing[k])),
         body.dataSource ?? existing.dataSource, body.note ?? existing.note,
         body.isEstimated ? 1 : 0, now(), id,

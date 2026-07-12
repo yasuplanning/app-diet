@@ -7,9 +7,10 @@
 const DS = '日本食品標準成分表（概算）';
 
 // n() は読みやすさのため。順序は上のコメントに対応。
-function food(name, aliases, category, vals, note = '') {
+// 第3引数（旧カテゴリ）は廃止。呼び出し側の互換のため引数だけ残し、値は使わない。
+function food(name, aliases, _category, vals, note = '') {
   const keys = ['calories','protein','fat','carbs','fiber','salt','potassium','calcium','magnesium','iron','zinc','vitaminB6','vitaminB12','folate','vitaminC','vitaminD','omega3','omega6','omega9'];
-  const row = { name, aliases, category, dataSource: DS, note, isEstimated: 0 };
+  const row = { name, aliases, dataSource: DS, note, isEstimated: 0 };
   keys.forEach((k, i) => { row[k] = vals[i]; });
   return row;
 }

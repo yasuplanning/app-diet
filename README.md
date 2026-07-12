@@ -81,8 +81,9 @@ npm start
 ## 構成
 ```
 server.js          HTTPサーバー + ルーティング + APIハンドラ（ローカル/Vercel共通のエントリ）
-src/nutrients.js   栄養素定義（19項目）・食事区分・カテゴリ
+src/nutrients.js   栄養素定義（19項目）・食事区分
 src/seed.js        初期食材データ（100gあたり）
+src/parse.js       貼り付けテキスト→食材データの解析（一括登録用）
 src/db.js          Neon Postgres 接続 + スキーマ + シード
 src/nutrition.js   栄養計算・集計（null=未登録の扱いを含む）
 src/llm.js         LLM推定（Anthropic Messages API）

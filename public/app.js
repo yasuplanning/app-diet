@@ -90,34 +90,28 @@ async function router() {
 // ======================================================
 async function viewDashboard() {
   const date = todayStr();
-  const d = await api.get(`/api/dashboard?date=${date}`);
+  const [d, bodyRecs, energyRecs] = await Promise.all([
+    api.get(`/api/dashboard?date=${date}`),
+    api.get('/api/body'),
+    api.get('/api/energy'),
+  ]);
   const g = d.goals || {};
   const t = d.today.total;
 
-  const statCard = (label, obj, unit, goal) => {
-    const val = obj.value;
-    let barHtml = '';
-    if (goal) {
-      const pct = Math.min(100, Math.round((val / goal) * 100));
-      const over = val > goal;
-      barHtml = `<div class="bar ${over ? 'over' : ''}"><span style="width:${pct}%"></span></div>
-        <div class="sub muted">目標 ${goal}${unit} の ${Math.round((val / goal) * 100)}%</div>`;
-    }
-    return `<div class="stat"><div class="label">${label}</div>
-      <div class="value">${num(val, 0)} <small>${unit}</small></div>
-      ${obj.partial ? '<div class="sub"><span class="pill partial">一部未登録</span></div>' : ''}
-      ${barHtml}</div>`;
-  };
-
-  // 7日カロリー/タンパク質
-  const weekChart = (key, cls) => {
-    const max = Math.max(1, ...d.week.days.map((x) => x.total[key].value));
-    return `<div class="chart">${d.week.days.map((x) => {
-      const v = x.total[key].value;
-      const h = Math.round((v / max) * 100);
-      return `<div class="col"><div class="amt">${v ? num(v, 0) : ''}</div><div class="fill ${cls}" style="height:${h}%"></div><div class="cap">${x.date.slice(5)}</div></div>`;
-    }).join('')}</div>`;
-  };
+  // 過去1週間（d.week は date を末尾とする直近7日）を、体重・体脂肪率・カロリー収支に整形。
+  const bodyMap = {}; for (const r of bodyRecs) bodyMap[r.date] = r;
+  const energyMap = {}; for (const r of energyRecs) energyMap[r.date] = r;
+  const week = d.week.days.map((x) => {
+    const b = bodyMap[x.date] || {};
+    const e = energyMap[x.date];
+    const burned = e && e.burnedCalories != null ? e.burnedCalories : null;
+    return {
+      date: x.date,
+      weight: b.weight != null ? b.weight : null,
+      bodyFat: b.bodyFat != null ? b.bodyFat : null,
+      net: burned != null ? x.total.calories.value - burned : null,
+    };
+  });
 
   // 不足・過剰チェック
   const check = META.nutrients.map((n) => {
@@ -141,46 +135,16 @@ async function viewDashboard() {
     ? d.foodFrequency.map((f) => `<tr><td>${esc(f.foodName)}</td><td class="num">${f.count}回</td><td class="num muted">${num(f.totalGrams, 0)}g</td></tr>`).join('')
     : '<tr><td colspan="3" class="muted">記録なし</td></tr>';
 
-  // 消費カロリーとカロリー収支
-  const burn = d.energy && d.energy.burnedCalories != null ? d.energy.burnedCalories : null;
-  const intake = t.calories.value;
-  const netVal = burn != null ? intake - burn : null;
-  const netCard = `
-    <div class="stat"><div class="label">今日の消費カロリー</div>
-      <div class="value">${burn != null ? num(burn, 0) : '—'} <small>kcal</small></div>
-      <div class="sub muted">${burn != null ? 'スマートウォッチ等の記録' : '未入力（食事入力画面で登録）'}</div></div>
-    <div class="stat"><div class="label">カロリー収支（摂取 − 消費）</div>
-      <div class="value ${netVal != null ? (netVal > 0 ? 'status-over' : 'status-ok') : ''}">${netVal != null ? (netVal > 0 ? '+' : '') + num(netVal, 0) : '—'} <small>kcal</small></div>
-      <div class="sub muted">${netVal != null ? (netVal > 0 ? '摂取オーバー' : '消費が上回る') : '消費カロリー未入力'}</div></div>`;
-
-  // 最新の体組成
-  const lb = d.latestBody;
-  const bodyCard = lb ? `
-    <div class="card"><h2>最新の体組成 <span class="muted small">(${lb.date})</span></h2>
-      <div class="grid grid-4">
-        <div class="stat"><div class="label">体重</div><div class="value">${num(lb.weight)} <small>kg</small></div></div>
-        <div class="stat"><div class="label">体脂肪率</div><div class="value">${num(lb.bodyFat)} <small>%</small></div></div>
-        <div class="stat"><div class="label">内臓脂肪</div><div class="value">${num(lb.visceralFat)}</div></div>
-        <div class="stat"><div class="label">目標体重</div><div class="value">${num(g.weightGoal)} <small>kg</small></div></div>
-      </div>
-    </div>` : '';
-
   app.innerHTML = `
     <h1>ホーム / ダッシュボード <span class="muted small">(${date})</span></h1>
-    <div class="grid grid-4">
-      ${statCard('今日のカロリー', t.calories, 'kcal', g.targetCalories)}
-      ${statCard('タンパク質', t.protein, 'g', g.targetProtein)}
-      ${statCard('食物繊維', t.fiber, 'g', g.targetFiber)}
-      ${statCard('食塩相当量', t.salt, 'g', g.saltLimit)}
-    </div>
 
-    <div class="grid grid-2">${netCard}</div>
-
-    ${bodyCard}
-
-    <div class="grid grid-2">
-      <div class="card"><h2>直近7日間のカロリー推移</h2>${weekChart('calories', '')}</div>
-      <div class="card"><h2>直近7日間のタンパク質推移</h2>${weekChart('protein', 'alt')}</div>
+    <div class="card"><h2>1週間の推移 <span class="muted small">(${d.week.start} 〜 ${d.week.end})</span></h2>
+      <div class="chart-title">体重（棒）・体脂肪率（棒）</div>
+      <div class="legend"><span><i style="background:var(--brand)"></i>体重 (kg)</span><span><i style="background:var(--accent)"></i>体脂肪率 (%)</span></div>
+      ${weekBodyChart(week)}
+      <div class="chart-title" style="margin-top:22px">摂取カロリー − 消費カロリー（折れ線）</div>
+      ${netLineChart(week)}
+      <p class="small muted">プラス＝摂取が消費を上回る／マイナス＝消費が上回る。消費カロリー未入力の日は線に表示されません。体重・体脂肪率は各系列内の増減が見えるよう縦軸を拡大しています。</p>
     </div>
 
     <div class="grid grid-2">
@@ -200,6 +164,65 @@ async function viewDashboard() {
 
     <div class="card"><h2>今日の主要栄養素一覧</h2>${nutrientTable(t)}</div>
   `;
+}
+
+// 過去1週間の体重・体脂肪率を、日ごとに細い縦棒2本で描く。
+// 体重(60kg前後)と体脂肪率(十数%)は絶対値が離れるため、各系列を自分の最小〜最大で
+// スケールし直し（0基準ではなく増減が見える拡大表示）、色で区別する。
+function weekBodyChart(week) {
+  const H = 130; // 棒エリアの高さ(px)
+  if (!week.some((w) => w.weight != null || w.bodyFat != null)) {
+    return '<p class="small muted">この期間の体重・体脂肪率の記録がありません（<a href="#/records">記録</a>から入力）。</p>';
+  }
+  const barPx = (series, v) => {
+    const nums = series.filter((x) => x != null);
+    if (v == null || !nums.length) return 0;
+    const mn = Math.min(...nums), mx = Math.max(...nums);
+    if (mx === mn) return Math.round(H * 0.55);
+    return Math.round(((v - mn) / (mx - mn)) * (H - 24)) + 20; // 20px〜H に写像
+  };
+  const wts = week.map((w) => w.weight), bfs = week.map((w) => w.bodyFat);
+  return `<div class="wk-bars">
+    ${week.map((w) => `<div class="wk-day">
+      <div class="wk-col" style="height:${H}px">
+        <div class="wk-bar" style="height:${barPx(wts, w.weight)}px;background:var(--brand)" title="体重 ${w.weight != null ? num(w.weight) + 'kg' : '—'}"></div>
+        <div class="wk-bar" style="height:${barPx(bfs, w.bodyFat)}px;background:var(--accent)" title="体脂肪率 ${w.bodyFat != null ? num(w.bodyFat) + '%' : '—'}"></div>
+      </div>
+      <div class="wk-cap">${w.date.slice(5)}</div>
+    </div>`).join('')}
+  </div>`;
+}
+
+// 過去1週間の「摂取カロリー − 消費カロリー」を折れ線で描く（0を基準線に含める）。
+// プラス（摂取オーバー）は赤、マイナス（消費が上回る）は緑の点で示す。
+function netLineChart(week) {
+  const pts = week.map((w, i) => ({ i, date: w.date, val: w.net }));
+  const vals = pts.filter((p) => p.val != null).map((p) => p.val);
+  if (!vals.length) return '<p class="small muted">摂取・消費カロリーがそろった日がありません（消費カロリーは<a href="#/records">記録</a>から入力）。</p>';
+  const W = 720, H = 220, padX = 46, padT = 22, padB = 34;
+  let mn = Math.min(0, ...vals), mx = Math.max(0, ...vals);
+  if (mn === mx) { mx += 1; mn -= 1; }
+  const n = week.length;
+  const X = (i) => padX + (n === 1 ? (W - 2 * padX) / 2 : (i / (n - 1)) * (W - 2 * padX));
+  const Y = (v) => padT + (1 - (v - mn) / (mx - mn)) * (H - padT - padB);
+  const y0 = Y(0);
+  const seg = pts.filter((p) => p.val != null);
+  const poly = seg.map((p) => `${X(p.i).toFixed(1)},${Y(p.val).toFixed(1)}`).join(' ');
+  const dots = seg.map((p) => {
+    const col = p.val > 0 ? 'var(--danger)' : 'var(--brand)';
+    return `<circle cx="${X(p.i).toFixed(1)}" cy="${Y(p.val).toFixed(1)}" r="3.5" fill="${col}"></circle>
+      <text x="${X(p.i).toFixed(1)}" y="${(Y(p.val) - 8).toFixed(1)}" text-anchor="middle" font-size="10" fill="var(--ink)">${p.val > 0 ? '+' : ''}${num(p.val, 0)}</text>`;
+  }).join('');
+  const caps = pts.map((p) => `<text x="${X(p.i).toFixed(1)}" y="${H - 12}" text-anchor="middle" font-size="10" fill="var(--muted)">${p.date.slice(5)}</text>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" style="display:block;overflow:visible">
+    <line x1="${padX}" y1="${y0.toFixed(1)}" x2="${W - padX}" y2="${y0.toFixed(1)}" stroke="var(--line)" stroke-dasharray="4 4"></line>
+    <text x="${padX - 8}" y="${(y0 + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)">0</text>
+    <text x="${padX - 8}" y="${padT + 3}" text-anchor="end" font-size="10" fill="var(--muted)">${num(mx, 0)}</text>
+    <text x="${padX - 8}" y="${(H - padB + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--muted)">${num(mn, 0)}</text>
+    <polyline points="${poly}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></polyline>
+    ${dots}
+    ${caps}
+  </svg>`;
 }
 
 // ======================================================

@@ -147,16 +147,6 @@ export async function daily(date) {
     nutrients: computeMeal(m, m.foodId ? foodsById[m.foodId] : null),
   }));
 
-  // 食事区分ごと
-  const byMealType = {};
-  for (const m of meals) {
-    (byMealType[m.mealType] ||= []).push(m);
-  }
-  const byType = {};
-  for (const [type, list] of Object.entries(byMealType)) {
-    byType[type] = aggregate(list, foodsById);
-  }
-
   // サプリ（別管理・個数ベース）
   const suppById = await loadSupplementsMap();
   const suppLogs = await getSupplementLogsByDate(date);
@@ -174,7 +164,6 @@ export async function daily(date) {
     date,
     meals: mealsOut,
     supplements: supplementsOut,
-    byMealType: byType,
     total,
   };
 }

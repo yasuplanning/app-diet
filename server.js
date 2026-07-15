@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, normalize, extname } from 'node:path';
 import db, { setup } from './src/db.js';
-import { NUTRIENTS, NUTRIENT_KEYS, MEAL_TYPES } from './src/nutrients.js';
+import { NUTRIENTS, NUTRIENT_KEYS } from './src/nutrients.js';
 import {
   daily, series, foodFrequency, frequentFoods, isoDate, addDays,
 } from './src/nutrition.js';
@@ -114,7 +114,7 @@ export async function handleApi(req, res, url) {
 
   // メタ情報
   if (p === '/api/meta' && method === 'GET') {
-    return sendJson(res, 200, { nutrients: NUTRIENTS, mealTypes: MEAL_TYPES, today: isoDate(new Date()) });
+    return sendJson(res, 200, { nutrients: NUTRIENTS, today: isoDate(new Date()) });
   }
 
   // 初回セットアップ（テーブル作成 + seed。冪等）
@@ -361,9 +361,9 @@ export async function handleApi(req, res, url) {
       foodId = food ? food.id : null;
     }
     const isUnregistered = food ? 0 : 1;
-    const info = await db.prepare(`INSERT INTO meals (date, time, mealType, foodId, foodName, grams, memo, isUnregistered, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`).run(
-      body.date, body.time || '', body.mealType || 'その他', foodId, body.foodName,
+    const info = await db.prepare(`INSERT INTO meals (date, time, foodId, foodName, grams, memo, isUnregistered, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`).run(
+      body.date, body.time || '', foodId, body.foodName,
       Number(body.grams), body.memo || '', isUnregistered, now(), now(),
     );
     const row = await db.prepare('SELECT * FROM meals WHERE id = ?').get(info.lastInsertRowid);
@@ -375,11 +375,11 @@ export async function handleApi(req, res, url) {
     const body = await readBody(req);
     if (!body.from || !body.to) return sendError(res, 400, 'from と to は必須です');
     const src = await db.prepare('SELECT * FROM meals WHERE date = ? ORDER BY time, id').all(body.from);
-    const stmt = db.prepare(`INSERT INTO meals (date, time, mealType, foodId, foodName, grams, memo, isUnregistered, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const stmt = db.prepare(`INSERT INTO meals (date, time, foodId, foodName, grams, memo, isUnregistered, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     let count = 0;
     for (const s of src) {
-      await stmt.run(body.to, s.time, s.mealType, s.foodId, s.foodName, s.grams, s.memo, s.isUnregistered, now(), now());
+      await stmt.run(body.to, s.time, s.foodId, s.foodName, s.grams, s.memo, s.isUnregistered, now(), now());
       count++;
     }
     return sendJson(res, 201, { copied: count });
@@ -399,8 +399,8 @@ export async function handleApi(req, res, url) {
         food = await resolveFood(foodName);
         foodId = food ? food.id : null;
       }
-      await db.prepare(`UPDATE meals SET date=?, time=?, mealType=?, foodId=?, foodName=?, grams=?, memo=?, isUnregistered=?, updatedAt=? WHERE id=?`).run(
-        body.date ?? existing.date, body.time ?? existing.time, body.mealType ?? existing.mealType,
+      await db.prepare(`UPDATE meals SET date=?, time=?, foodId=?, foodName=?, grams=?, memo=?, isUnregistered=?, updatedAt=? WHERE id=?`).run(
+        body.date ?? existing.date, body.time ?? existing.time,
         foodId, foodName, body.grams !== undefined ? Number(body.grams) : existing.grams,
         body.memo ?? existing.memo, food ? 0 : (foodId ? 0 : 1), now(), id,
       );

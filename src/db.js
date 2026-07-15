@@ -35,7 +35,7 @@ function toPg(text) {
 const CAMEL_NAMES = [
   ...NUTRIENT_KEYS,
   'dataSource', 'isEstimated', 'createdAt', 'updatedAt',
-  'mealType', 'foodId', 'foodName', 'isUnregistered',
+  'foodId', 'foodName', 'isUnregistered',
   'targetCalories', 'targetProtein', 'targetFiber', 'saltLimit', 'weightGoal', 'bodyFatGoal',
   'bodyFat', 'visceralFat', 'burnedCalories',
   'supplementId', 'supplementName',
@@ -95,7 +95,6 @@ export async function setup() {
       id SERIAL PRIMARY KEY,
       date TEXT NOT NULL,
       time TEXT,
-      mealType TEXT NOT NULL,
       foodId INTEGER,
       foodName TEXT NOT NULL,
       grams DOUBLE PRECISION NOT NULL,
@@ -161,6 +160,8 @@ export async function setup() {
   // マイグレーション: 旧スキーマの category カラムを削除（計算に用いないため廃止）。
   // 新規テーブルには存在しないので IF EXISTS で no-op。
   await exec('ALTER TABLE foods DROP COLUMN IF EXISTS category');
+  // マイグレーション: 食事区分（mealType）を廃止。既存DBの列を削除。
+  await exec('ALTER TABLE meals DROP COLUMN IF EXISTS mealType');
 
   // goals は必ず1行存在させる
   const goalCount = await prepare('SELECT COUNT(*)::int AS c FROM goals').get();

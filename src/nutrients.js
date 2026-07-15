@@ -25,5 +25,3 @@ export const NUTRIENTS = [
 
 // DBのfoodsテーブルに存在する栄養素カラム
 export const NUTRIENT_KEYS = NUTRIENTS.map((n) => n.key);
-
-export const MEAL_TYPES = ['朝食', '昼食', '夕食', '間食', 'その他'];

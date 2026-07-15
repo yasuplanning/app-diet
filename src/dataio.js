@@ -86,7 +86,7 @@ export async function buildExport(start, end, scope = 'all') {
 // ZIP(Buffer) を取り込む。
 // opts: { mode: 'skip'|'overwrite', importGoals: boolean }
 //  - foods: 食材名で突き合わせ。既存があれば再利用（overwrite時は栄養値も更新）、無ければ追加。
-//  - meals: (date,time,mealType,foodName,grams) が完全一致する既存はスキップ（重複防止）。foodId は食材名で貼り直す。
+//  - meals: (date,time,foodName,grams) が完全一致する既存はスキップ（重複防止）。foodId は食材名で貼り直す。
 //  - daily_energy / body_records: 日付キー。既存日付は skip なら保持、overwrite なら更新。
 //  - goals: importGoals=true のときだけ上書き。
 // 注: Neon の HTTP ドライバは対話的トランザクションを張らないため逐次実行（各文が即コミット）。
@@ -153,11 +153,11 @@ export async function applyImport(zipBuffer, opts = {}) {
   }
 
   // --- meals（完全一致で重複スキップ、foodId は名前で貼り直す）---
-  const insertMeal = db.prepare(`INSERT INTO meals (date, time, mealType, foodId, foodName, grams, memo, isUnregistered, createdAt, updatedAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const insertMeal = db.prepare(`INSERT INTO meals (date, time, foodId, foodName, grams, memo, isUnregistered, createdAt, updatedAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   for (const m of impMeals) {
-    const dup = await db.prepare('SELECT id FROM meals WHERE date=? AND time=? AND mealType=? AND foodName=? AND grams=?')
-      .get(m.date, m.time ?? '', m.mealType ?? 'その他', m.foodName, m.grams);
+    const dup = await db.prepare('SELECT id FROM meals WHERE date=? AND time=? AND foodName=? AND grams=?')
+      .get(m.date, m.time ?? '', m.foodName, m.grams);
     if (dup) { summary.meals.skipped++; continue; }
     // 食材IDを名前で解決（インポートしたfoodsの対応、無ければ既存マスタ）
     let foodId = nameToId[m.foodName] ?? null;
@@ -165,7 +165,7 @@ export async function applyImport(zipBuffer, opts = {}) {
       const f = await db.prepare('SELECT id FROM foods WHERE name = ?').get(m.foodName);
       foodId = f ? f.id : null;
     }
-    await insertMeal.run(m.date, m.time ?? '', m.mealType ?? 'その他', foodId, m.foodName, m.grams, m.memo ?? '', foodId ? 0 : 1, now(), now());
+    await insertMeal.run(m.date, m.time ?? '', foodId, m.foodName, m.grams, m.memo ?? '', foodId ? 0 : 1, now(), now());
     summary.meals.added++;
   }
 

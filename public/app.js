@@ -17,7 +17,7 @@ const api = {
 };
 
 // ---------- state ----------
-let META = null; // { nutrients, mealTypes, today }
+let META = null; // { nutrients, today }
 const app = document.getElementById('app');
 
 // ---------- utils ----------
@@ -241,7 +241,6 @@ async function viewInput(params) {
         <div class="row" style="flex:2">
           <div><label>日付</label><input type="date" id="f-date" value="${date}"></div>
           <div><label>時刻</label><input type="time" id="f-time" value="${nowTime}"></div>
-          <div><label>食事区分</label><select id="f-type">${META.mealTypes.map((m) => `<option>${m}</option>`).join('')}</select></div>
         </div>
       </div>
 
@@ -345,7 +344,7 @@ async function viewInput(params) {
     const grams = $('#f-grams').value;
     if (!foodName || grams === '') { toast('食材名とグラム数を入力してください', true); return; }
     const payload = {
-      date: $('#f-date').value, time: $('#f-time').value, mealType: $('#f-type').value,
+      date: $('#f-date').value, time: $('#f-time').value,
       foodId: foodId.value || null, foodName, grams, memo: $('#f-memo').value,
     };
     try {
@@ -404,9 +403,9 @@ async function viewHistory() {
   app.innerHTML = `<h1>食事履歴</h1>` + (dates.length ? dates.map((d) => `
     <div class="card">
       <div class="flex-between"><h2>${d}</h2><a href="#/input?date=${d}" class="pill">この日に追加</a></div>
-      <div class="table-wrap"><table><thead><tr><th>時刻</th><th>区分</th><th>食材</th><th class="num">量</th><th>メモ</th><th></th></tr></thead><tbody>
+      <div class="table-wrap"><table><thead><tr><th>時刻</th><th>食材</th><th class="num">量</th><th>メモ</th><th></th></tr></thead><tbody>
       ${byDate[d].map((m) => `<tr>
-        <td>${esc(m.time || '')}</td><td>${esc(m.mealType)}</td>
+        <td>${esc(m.time || '')}</td>
         <td>${esc(m.foodName)} ${m.isUnregistered ? '<span class="pill unreg">未登録</span>' : ''}</td>
         <td class="num">${num(m.grams, 0)}g</td><td class="muted small">${esc(m.memo || '')}</td>
         <td><button class="ghost sm" data-del="${m.id}">削除</button></td>
@@ -912,6 +911,11 @@ async function viewGoals() {
 (async function boot() {
   META = await api.get('/api/meta');
   window.addEventListener('hashchange', router);
+  // 同じ画面のナビをタップした場合（hashchange が発火しない）でも再描画する。
+  // これにより食事入力を開き直すたびに時刻が現在時刻へリセットされる。
+  document.querySelectorAll('.nav a').forEach((a) => a.addEventListener('click', () => {
+    if (location.hash === a.getAttribute('href')) router();
+  }));
   if (!location.hash) location.hash = '#/dashboard';
   router();
 })();

@@ -25,7 +25,15 @@ const $ = (sel, el = document) => el.querySelector(sel);
 const el = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function num(v, d = 1) { if (v === null || v === undefined || v === '') return '—'; const n = Number(v); return Number.isInteger(n) ? String(n) : n.toFixed(d); }
-function todayStr() { return META.today; }
+// 「今日」はブラウザのローカル日付で判定する。サーバ(Vercel)はUTCで動くため
+// META.today だと JST 早朝に前日になってしまう（時刻はクライアント基準なので日付も揃える）。
+function todayStr() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 function addDays(dateStr, n) { const [y, m, d] = dateStr.split('-').map(Number); const dt = new Date(y, m - 1, d); dt.setDate(dt.getDate() + n); return dt.toISOString().slice(0, 10); }
 
 function toast(msg, isErr = false) {

@@ -395,27 +395,44 @@ function promptRegister(name) {
 // 食事履歴
 // ======================================================
 async function viewHistory() {
-  const meals = await api.get('/api/meals');
+  const [meals, suppLogs] = await Promise.all([
+    api.get('/api/meals'),
+    api.get('/api/supplement-logs'),
+  ]);
   const byDate = {};
-  meals.forEach((m) => (byDate[m.date] ||= []).push(m));
+  meals.forEach((m) => (byDate[m.date] ||= []).push({ ...m, kind: 'meal' }));
+  suppLogs.forEach((s) => (byDate[s.date] ||= []).push({ ...s, kind: 'supp' }));
   const dates = Object.keys(byDate).sort().reverse();
+  // 各日の記録を時刻順に並べ替え（食事とサプリを時系列で混在表示）。
+  dates.forEach((d) => byDate[d].sort((a, b) => (a.time || '').localeCompare(b.time || '')));
+
+  const rowHtml = (r) => r.kind === 'supp' ? `<tr>
+        <td>${esc(r.time || '')}</td>
+        <td>💊 ${esc(r.supplementName)} <span class="pill supp">サプリ</span></td>
+        <td class="num">${num(r.units, 0)}個</td><td class="muted small">${esc(r.memo || '')}</td>
+        <td><button class="ghost sm" data-supdel="${r.id}">削除</button></td>
+      </tr>` : `<tr>
+        <td>${esc(r.time || '')}</td>
+        <td>${esc(r.foodName)} ${r.isUnregistered ? '<span class="pill unreg">未登録</span>' : ''}</td>
+        <td class="num">${num(r.grams, 0)}g</td><td class="muted small">${esc(r.memo || '')}</td>
+        <td><button class="ghost sm" data-del="${r.id}">削除</button></td>
+      </tr>`;
 
   app.innerHTML = `<h1>食事履歴</h1>` + (dates.length ? dates.map((d) => `
     <div class="card">
       <div class="flex-between"><h2>${d}</h2><a href="#/input?date=${d}" class="pill">この日に追加</a></div>
-      <div class="table-wrap"><table><thead><tr><th>時刻</th><th>食材</th><th class="num">量</th><th>メモ</th><th></th></tr></thead><tbody>
-      ${byDate[d].map((m) => `<tr>
-        <td>${esc(m.time || '')}</td>
-        <td>${esc(m.foodName)} ${m.isUnregistered ? '<span class="pill unreg">未登録</span>' : ''}</td>
-        <td class="num">${num(m.grams, 0)}g</td><td class="muted small">${esc(m.memo || '')}</td>
-        <td><button class="ghost sm" data-del="${m.id}">削除</button></td>
-      </tr>`).join('')}
+      <div class="table-wrap"><table><thead><tr><th>時刻</th><th>食材・サプリ</th><th class="num">量</th><th>メモ</th><th></th></tr></thead><tbody>
+      ${byDate[d].map(rowHtml).join('')}
       </tbody></table></div>
     </div>`).join('') : '<div class="card empty">まだ食事記録がありません。<a href="#/input">食事入力</a>から始めましょう。</div>');
 
   app.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', async () => {
     if (!confirm('この記録を削除しますか？')) return;
     await api.del(`/api/meals/${b.dataset.del}`); toast('削除しました'); viewHistory();
+  }));
+  app.querySelectorAll('[data-supdel]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('このサプリ記録を削除しますか？')) return;
+    await api.del(`/api/supplement-logs/${b.dataset.supdel}`); toast('削除しました'); viewHistory();
   }));
 }
 

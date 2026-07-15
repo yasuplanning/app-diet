@@ -99,6 +99,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .pill.est { background: var(--warn-light); color: var(--warn); }
 .pill.unreg { background: #fde8e8; color: var(--danger); }
 .pill.partial { background: var(--warn-light); color: var(--warn); }
+.pill.supp { background: #efe8fb; color: #6b46c1; }
 
 /* quick chips */
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }

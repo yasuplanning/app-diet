@@ -104,14 +104,17 @@ export function addSupplementTotals(totals, logs, suppById) {
   return totals;
 }
 
+// 集計で使う meals カラム。大きい photo 本体は除外し、有無だけ hasPhoto で返す。
+const MEAL_AGG_COLS = 'id, date, time, foodId, foodName, grams, memo, isUnregistered, createdAt, updatedAt, (photo IS NOT NULL) AS hasPhoto';
+
 // 指定日のmealを取得
 export function getMealsByDate(date) {
-  return db.prepare('SELECT * FROM meals WHERE date = ? ORDER BY time, id').all(date);
+  return db.prepare(`SELECT ${MEAL_AGG_COLS} FROM meals WHERE date = ? ORDER BY time, id`).all(date);
 }
 
 // 日付範囲のmealを取得（両端含む）
 export function getMealsInRange(start, end) {
-  return db.prepare('SELECT * FROM meals WHERE date >= ? AND date <= ? ORDER BY date, time, id').all(start, end);
+  return db.prepare(`SELECT ${MEAL_AGG_COLS} FROM meals WHERE date >= ? AND date <= ? ORDER BY date, time, id`).all(start, end);
 }
 
 // --- 日付ユーティリティ (YYYY-MM-DD, ローカル基準) ---

@@ -51,6 +51,31 @@ function openModal(node) {
 }
 function closeModal() { document.getElementById('modal-root').innerHTML = ''; }
 
+// 画像ファイルをブラウザ側で縮小・JPEG圧縮し data URL を返す。
+// サーバ(Vercel)はディスク保存不可のため画像はDBに data URL として保存する。
+// 長辺 maxDim に収まるよう縮小し、アップロードとDBを軽量に保つ（概ね100〜300KB）。
+function downscaleImage(file, maxDim = 1024, quality = 0.7) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('画像の読み込みに失敗しました'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('画像の読み込みに失敗しました'));
+      img.onload = () => {
+        let { width, height } = img;
+        if (width >= height && width > maxDim) { height = Math.round(height * maxDim / width); width = maxDim; }
+        else if (height > width && height > maxDim) { width = Math.round(width * maxDim / height); height = maxDim; }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 // 栄養素値の表示（partial=一部データ未登録）
 function nutrientCell(obj) {
   if (!obj) return '—';
@@ -241,13 +266,19 @@ async function viewInput(params) {
         </div>
         <div><label>グラム数 (g)</label><input type="number" id="f-grams" min="0" step="1" placeholder="150"></div>
       </div>
+      <label>写真（任意・撮影またはファイル選択）</label>
+      <div class="row" style="align-items:center">
+        <input type="file" id="f-photo" accept="image/*" capture="environment">
+        <div id="f-photo-preview"></div>
+      </div>
+      <p class="small muted" style="margin-top:4px">写真を付けると食材名は任意です（未入力なら「名称未設定」で登録され、あとで<a href="#/history">履歴</a>の編集で名前を付けたり写真を削除できます）。</p>
       <label>メモ</label>
       <input type="text" id="f-memo" placeholder="任意">
       <div class="row" style="margin-top:12px">
         <button id="btn-add">記録する</button>
         <button class="ghost" id="btn-copy">前日の食事をこの日にコピー</button>
       </div>
-      <p class="small muted" style="margin-top:10px">記録した内容は<a href="#/history">履歴</a>で確認・削除できます。</p>
+      <p class="small muted" style="margin-top:10px">記録した内容は<a href="#/history">履歴</a>で確認・編集・削除できます。</p>
     </div>
   `;
 
@@ -309,6 +340,19 @@ async function viewInput(params) {
     } catch (e) { toast(e.message, true); }
   }));
 
+  // --- photo（撮影/選択したらブラウザ側で縮小して保持）---
+  let photoData = null;
+  const clearPhoto = () => { photoData = null; $('#f-photo').value = ''; $('#f-photo-preview').innerHTML = ''; };
+  $('#f-photo').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) { clearPhoto(); return; }
+    try {
+      photoData = await downscaleImage(file);
+      $('#f-photo-preview').innerHTML = `<img src="${photoData}" style="max-height:72px;border-radius:8px;margin-left:8px"> <button type="button" class="ghost sm" id="f-photo-clear">写真を外す</button>`;
+      $('#f-photo-clear').onclick = clearPhoto;
+    } catch (err) { toast(err.message || '画像の読み込みに失敗しました', true); clearPhoto(); }
+  });
+
   // --- add ---
   $('#btn-add').addEventListener('click', addMeal);
   $('#f-grams').addEventListener('keydown', (e) => { if (e.key === 'Enter') addMeal(); });
@@ -316,17 +360,21 @@ async function viewInput(params) {
   async function addMeal() {
     const foodName = foodInput.value.trim();
     const grams = $('#f-grams').value;
-    if (!foodName || grams === '') { toast('食材名とグラム数を入力してください', true); return; }
+    if (grams === '') { toast('グラム数を入力してください', true); return; }
+    if (!foodName && !photoData) { toast('食材名を入力するか写真を撮影してください', true); return; }
     const payload = {
       date: $('#f-date').value, time: $('#f-time').value,
       foodId: foodId.value || null, foodName, grams, memo: $('#f-memo').value,
+      photo: photoData,
     };
     try {
       const r = await api.post('/api/meals', payload);
       toast('記録しました');
       foodInput.value = ''; foodId.value = ''; $('#f-grams').value = ''; $('#f-memo').value = '';
+      clearPhoto();
       foodInput.focus();
-      if (r.unregistered) promptRegister(foodName);
+      // 写真なしで名前を打った場合のみ、未登録食材の登録を促す（写真だけの記録は促さない）。
+      if (r.unregistered && foodName) promptRegister(foodName);
     } catch (e) { toast(e.message, true); }
   }
 
@@ -434,12 +482,12 @@ async function viewHistoryDay(date) {
         <td>${esc(r.time || '')}</td>
         <td>💊 ${esc(r.supplementName)} <span class="pill supp">サプリ</span></td>
         <td class="num">${num(r.units, 0)}個</td><td class="muted small">${esc(r.memo || '')}</td>
-        <td><button class="ghost sm" data-supdel="${r.id}">削除</button></td>
+        <td><button class="ghost sm" data-supedit="${r.id}">編集</button> <button class="ghost sm" data-supdel="${r.id}">削除</button></td>
       </tr>` : `<tr>
         <td>${esc(r.time || '')}</td>
-        <td>${esc(r.foodName)} ${r.isUnregistered ? '<span class="pill unreg">未登録</span>' : ''}</td>
+        <td>${r.hasPhoto ? `<img src="/api/meals/${r.id}/photo" alt="写真" data-photo="${r.id}" style="height:34px;width:34px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:6px;cursor:pointer">` : ''}${esc(r.foodName)} ${r.isUnregistered ? '<span class="pill unreg">未登録</span>' : ''}</td>
         <td class="num">${num(r.grams, 0)}g</td><td class="muted small">${esc(r.memo || '')}</td>
-        <td><button class="ghost sm" data-del="${r.id}">削除</button></td>
+        <td><button class="ghost sm" data-edit="${r.id}">編集</button> <button class="ghost sm" data-del="${r.id}">削除</button></td>
       </tr>`;
 
   app.innerHTML = `
@@ -451,14 +499,125 @@ async function viewHistoryDay(date) {
       </tbody></table></div>` : '<div class="empty">この日の記録はありません。</div>'}
     </div>`;
 
+  const reload = () => viewHistoryDay(date);
+  // 写真サムネのクリックで拡大表示。
+  app.querySelectorAll('[data-photo]').forEach((im) => im.addEventListener('click', () => {
+    const node = el(`<div class="modal" style="text-align:center">
+      <img src="/api/meals/${im.dataset.photo}/photo" alt="写真" style="max-width:100%;max-height:78vh;border-radius:8px">
+      <div class="row" style="margin-top:12px;justify-content:center"><button class="ghost" id="ph-close">閉じる</button></div>
+    </div>`);
+    node.querySelector('#ph-close').onclick = closeModal;
+    openModal(node);
+  }));
+  app.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => {
+    openMealEditor(meals.find((x) => String(x.id) === b.dataset.edit), reload);
+  }));
   app.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', async () => {
     if (!confirm('この記録を削除しますか？')) return;
-    await api.del(`/api/meals/${b.dataset.del}`); toast('削除しました'); viewHistoryDay(date);
+    await api.del(`/api/meals/${b.dataset.del}`); toast('削除しました'); reload();
+  }));
+  app.querySelectorAll('[data-supedit]').forEach((b) => b.addEventListener('click', () => {
+    openSupplementLogEditor(suppLogs.find((x) => String(x.id) === b.dataset.supedit), reload);
   }));
   app.querySelectorAll('[data-supdel]').forEach((b) => b.addEventListener('click', async () => {
     if (!confirm('このサプリ記録を削除しますか？')) return;
-    await api.del(`/api/supplement-logs/${b.dataset.supdel}`); toast('削除しました'); viewHistoryDay(date);
+    await api.del(`/api/supplement-logs/${b.dataset.supdel}`); toast('削除しました'); reload();
   }));
+}
+
+// 食事記録の編集モーダル。食材名を変えると食材マスタと突き合わせ直す（PUT側で解決）。
+function openMealEditor(meal, onSaved) {
+  if (!meal) return;
+  let newPhoto = null; // 差し替え用に選んだ data URL（未選択なら null）
+  const node = el(`<div class="modal">
+    <div class="flex-between"><h2>食事を編集</h2><button class="ghost sm" id="me-close">✕</button></div>
+    <div class="row">
+      <div><label>日付</label><input type="date" id="me-date" value="${esc(meal.date)}"></div>
+      <div><label>時刻</label><input type="time" id="me-time" value="${esc(meal.time || '')}"></div>
+    </div>
+    <div class="row">
+      <div style="flex:2"><label>食材名</label><input type="text" id="me-food" value="${esc(meal.foodName)}"></div>
+      <div><label>グラム数 (g)</label><input type="number" id="me-grams" min="0" step="1" value="${esc(meal.grams)}"></div>
+    </div>
+    <label>メモ</label><input type="text" id="me-memo" value="${esc(meal.memo || '')}">
+    <label>写真</label>
+    <div>
+      ${meal.hasPhoto ? `<img src="/api/meals/${meal.id}/photo" alt="写真" style="max-height:120px;border-radius:8px;display:block">
+        <label style="display:flex;align-items:center;gap:6px;margin-top:6px"><input type="checkbox" id="me-photo-del" style="width:auto"> 写真を削除する</label>` : ''}
+      <input type="file" id="me-photo-file" accept="image/*" capture="environment" style="margin-top:6px">
+      <div id="me-photo-preview"></div>
+      <p class="small muted" style="margin-top:4px">${meal.hasPhoto ? '新しい写真を選ぶと差し替わります。' : '写真を追加できます。'}写真がある場合、食材名は空欄でも「名称未設定」で保存されます。</p>
+    </div>
+    <p class="small muted" style="margin-top:8px">食材名を変更すると食材マスタと突き合わせ直します（マスタに無い名前にすると未登録扱いになります）。</p>
+    <div class="row" style="margin-top:16px"><button id="me-save">更新</button><button class="ghost" id="me-cancel">キャンセル</button></div>
+  </div>`);
+  node.querySelector('#me-close').onclick = closeModal;
+  node.querySelector('#me-cancel').onclick = closeModal;
+  node.querySelector('#me-photo-file').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) { newPhoto = null; node.querySelector('#me-photo-preview').innerHTML = ''; return; }
+    try {
+      newPhoto = await downscaleImage(file);
+      node.querySelector('#me-photo-preview').innerHTML = `<img src="${newPhoto}" style="max-height:100px;border-radius:8px;margin-top:6px;display:block">`;
+      const del = node.querySelector('#me-photo-del'); if (del) del.checked = false;
+    } catch (err) { toast(err.message || '画像の読み込みに失敗しました', true); }
+  });
+  node.querySelector('#me-save').onclick = async () => {
+    const grams = node.querySelector('#me-grams').value;
+    const delPhoto = !!node.querySelector('#me-photo-del')?.checked;
+    const willHavePhoto = !delPhoto && (meal.hasPhoto || !!newPhoto);
+    const foodName = node.querySelector('#me-food').value.trim() || (willHavePhoto ? '名称未設定' : '');
+    if (grams === '') { toast('グラム数を入力してください', true); return; }
+    if (!foodName) { toast('食材名を入力するか写真を残してください', true); return; }
+    const payload = {
+      date: node.querySelector('#me-date').value,
+      time: node.querySelector('#me-time').value,
+      foodId: null, foodName, grams, memo: node.querySelector('#me-memo').value,
+    };
+    if (delPhoto) payload.removePhoto = true;
+    else if (newPhoto) payload.photo = newPhoto;
+    try {
+      await api.put(`/api/meals/${meal.id}`, payload);
+      closeModal(); toast('更新しました'); onSaved && onSaved();
+    } catch (e) { toast(e.message, true); }
+  };
+  openModal(node);
+}
+
+// サプリ記録の編集モーダル。サプリはマスタから選び直せる。
+async function openSupplementLogEditor(log, onSaved) {
+  if (!log) return;
+  const supps = await api.get('/api/supplements');
+  const options = supps.map((s) => `<option value="${s.id}" ${s.id === log.supplementId ? 'selected' : ''}>${esc(s.name)}${s.brand ? ` (${esc(s.brand)})` : ''}</option>`).join('');
+  const node = el(`<div class="modal">
+    <div class="flex-between"><h2>サプリ記録を編集</h2><button class="ghost sm" id="sle-close">✕</button></div>
+    <div class="row">
+      <div><label>日付</label><input type="date" id="sle-date" value="${esc(log.date)}"></div>
+      <div><label>時刻</label><input type="time" id="sle-time" value="${esc(log.time || '')}"></div>
+    </div>
+    <div class="row">
+      <div style="flex:2"><label>サプリ</label><select id="sle-supp">${options}</select></div>
+      <div><label>個数</label><input type="number" id="sle-units" min="0" step="1" value="${esc(log.units)}"></div>
+    </div>
+    <label>メモ</label><input type="text" id="sle-memo" value="${esc(log.memo || '')}">
+    <div class="row" style="margin-top:16px"><button id="sle-save">更新</button><button class="ghost" id="sle-cancel">キャンセル</button></div>
+  </div>`);
+  node.querySelector('#sle-close').onclick = closeModal;
+  node.querySelector('#sle-cancel').onclick = closeModal;
+  node.querySelector('#sle-save').onclick = async () => {
+    const units = node.querySelector('#sle-units').value;
+    if (units === '' || Number(units) < 0) { toast('個数を入力してください', true); return; }
+    try {
+      await api.put(`/api/supplement-logs/${log.id}`, {
+        date: node.querySelector('#sle-date').value,
+        time: node.querySelector('#sle-time').value,
+        supplementId: node.querySelector('#sle-supp').value,
+        units, memo: node.querySelector('#sle-memo').value,
+      });
+      closeModal(); toast('更新しました'); onSaved && onSaved();
+    } catch (e) { toast(e.message, true); }
+  };
+  openModal(node);
 }
 
 // ======================================================

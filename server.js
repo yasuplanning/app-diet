@@ -332,42 +332,72 @@ export async function handleApi(req, res, url) {
     return sendJson(res, 201, row);
   }
 
-  if ((m = p.match(/^\/api\/supplement-logs\/(\d+)$/)) && method === 'DELETE') {
-    await db.prepare('DELETE FROM supplement_logs WHERE id = ?').run(Number(m[1]));
-    return sendJson(res, 200, { ok: true });
+  if ((m = p.match(/^\/api\/supplement-logs\/(\d+)$/))) {
+    const id = Number(m[1]);
+    const existing = await db.prepare('SELECT * FROM supplement_logs WHERE id = ?').get(id);
+    if (!existing) return sendError(res, 404, 'サプリ記録が見つかりません');
+
+    if (method === 'PUT') {
+      const body = await readBody(req);
+      let suppId = existing.supplementId;
+      let name = existing.supplementName;
+      // サプリを変更する場合のみマスタを引き直す。
+      if ('supplementId' in body || 'supplementName' in body) {
+        let supp = body.supplementId ? await db.prepare('SELECT * FROM supplements WHERE id = ?').get(Number(body.supplementId)) : null;
+        if (!supp && body.supplementName) supp = await db.prepare('SELECT * FROM supplements WHERE name = ?').get(body.supplementName);
+        if (!supp) return sendError(res, 400, 'サプリが見つかりません（先にサプリマスタへ登録してください）');
+        suppId = supp.id; name = supp.name;
+      }
+      await db.prepare(`UPDATE supplement_logs SET date=?, time=?, supplementId=?, supplementName=?, units=?, memo=?, updatedAt=? WHERE id=?`).run(
+        body.date ?? existing.date, body.time ?? existing.time, suppId, name,
+        (body.units !== undefined && body.units !== '') ? Number(body.units) : existing.units,
+        body.memo ?? existing.memo, now(), id,
+      );
+      const row = await db.prepare('SELECT * FROM supplement_logs WHERE id = ?').get(id);
+      return sendJson(res, 200, row);
+    }
+    if (method === 'DELETE') {
+      await db.prepare('DELETE FROM supplement_logs WHERE id = ?').run(id);
+      return sendJson(res, 200, { ok: true });
+    }
   }
 
   // --- meals ---
+  // 一覧・集計では大きい photo 本体は返さず、有無だけ hasPhoto で返す（画像は専用エンドポイントで取得）。
+  const MEAL_COLS = 'id, date, time, foodId, foodName, grams, memo, isUnregistered, createdAt, updatedAt, (photo IS NOT NULL) AS hasPhoto';
   if (p === '/api/meals' && method === 'GET') {
     const date = q.get('date');
     const start = q.get('start');
     const end = q.get('end');
     let rows;
-    if (date) rows = await db.prepare('SELECT * FROM meals WHERE date = ? ORDER BY time, id').all(date);
-    else if (start && end) rows = await db.prepare('SELECT * FROM meals WHERE date >= ? AND date <= ? ORDER BY date, time, id').all(start, end);
-    else rows = await db.prepare('SELECT * FROM meals ORDER BY date DESC, time DESC, id DESC LIMIT 200').all();
-    return sendJson(res, 200, rows.map((r) => ({ ...r, isUnregistered: !!r.isUnregistered })));
+    if (date) rows = await db.prepare(`SELECT ${MEAL_COLS} FROM meals WHERE date = ? ORDER BY time, id`).all(date);
+    else if (start && end) rows = await db.prepare(`SELECT ${MEAL_COLS} FROM meals WHERE date >= ? AND date <= ? ORDER BY date, time, id`).all(start, end);
+    else rows = await db.prepare(`SELECT ${MEAL_COLS} FROM meals ORDER BY date DESC, time DESC, id DESC LIMIT 200`).all();
+    return sendJson(res, 200, rows.map((r) => ({ ...r, isUnregistered: !!r.isUnregistered, hasPhoto: !!r.hasPhoto })));
   }
 
   if (p === '/api/meals' && method === 'POST') {
     const body = await readBody(req);
-    if (!body.foodName || !body.date || body.grams === undefined || body.grams === '') {
-      return sendError(res, 400, 'date, foodName, grams は必須です');
+    const photo = (typeof body.photo === 'string' && body.photo.startsWith('data:')) ? body.photo : null;
+    // 写真がある場合は食材名を任意にし、未入力なら「名称未設定」で登録する（あとで編集で命名）。
+    const foodName = (body.foodName && String(body.foodName).trim()) || (photo ? '名称未設定' : '');
+    if (!foodName || !body.date || body.grams === undefined || body.grams === '') {
+      return sendError(res, 400, 'date と grams は必須です（写真がない場合は foodName も必須）');
     }
     let foodId = body.foodId ? Number(body.foodId) : null;
     let food = foodId ? await db.prepare('SELECT * FROM foods WHERE id = ?').get(foodId) : null;
     if (!food) {
-      food = await resolveFood(body.foodName);
+      food = await resolveFood(foodName);
       foodId = food ? food.id : null;
     }
     const isUnregistered = food ? 0 : 1;
-    const info = await db.prepare(`INSERT INTO meals (date, time, foodId, foodName, grams, memo, isUnregistered, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`).run(
-      body.date, body.time || '', foodId, body.foodName,
-      Number(body.grams), body.memo || '', isUnregistered, now(), now(),
+    const info = await db.prepare(`INSERT INTO meals (date, time, foodId, foodName, grams, memo, photo, isUnregistered, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`).run(
+      body.date, body.time || '', foodId, foodName,
+      Number(body.grams), body.memo || '', photo, isUnregistered, now(), now(),
     );
-    const row = await db.prepare('SELECT * FROM meals WHERE id = ?').get(info.lastInsertRowid);
-    return sendJson(res, 201, { ...row, isUnregistered: !!row.isUnregistered, unregistered: !!isUnregistered });
+    const row = await db.prepare(`SELECT ${MEAL_COLS} FROM meals WHERE id = ?`).get(info.lastInsertRowid);
+    return sendJson(res, 201, { ...row, isUnregistered: !!row.isUnregistered, hasPhoto: !!row.hasPhoto, unregistered: !!isUnregistered });
   }
 
   // 前日と同じ食事をコピー: { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD' }
@@ -375,14 +405,26 @@ export async function handleApi(req, res, url) {
     const body = await readBody(req);
     if (!body.from || !body.to) return sendError(res, 400, 'from と to は必須です');
     const src = await db.prepare('SELECT * FROM meals WHERE date = ? ORDER BY time, id').all(body.from);
-    const stmt = db.prepare(`INSERT INTO meals (date, time, foodId, foodName, grams, memo, isUnregistered, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const stmt = db.prepare(`INSERT INTO meals (date, time, foodId, foodName, grams, memo, photo, isUnregistered, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     let count = 0;
     for (const s of src) {
-      await stmt.run(body.to, s.time, s.foodId, s.foodName, s.grams, s.memo, s.isUnregistered, now(), now());
+      await stmt.run(body.to, s.time, s.foodId, s.foodName, s.grams, s.memo, s.photo, s.isUnregistered, now(), now());
       count++;
     }
     return sendJson(res, 201, { copied: count });
+  }
+
+  // 食事写真のバイナリ配信（<img src> 用。data URL をデコードして画像として返す）。
+  if ((m = p.match(/^\/api\/meals\/(\d+)\/photo$/)) && method === 'GET') {
+    const row = await db.prepare('SELECT photo FROM meals WHERE id = ?').get(Number(m[1]));
+    const dataUrl = row && row.photo;
+    const parsed = typeof dataUrl === 'string' ? /^data:([^;,]+)?(;base64)?,([\s\S]*)$/.exec(dataUrl) : null;
+    if (!parsed) return sendError(res, 404, '写真がありません');
+    const mime = parsed[1] || 'application/octet-stream';
+    const buf = parsed[2] ? Buffer.from(parsed[3], 'base64') : Buffer.from(decodeURIComponent(parsed[3]), 'utf8');
+    res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'private, max-age=3600' });
+    return res.end(buf);
   }
 
   if ((m = p.match(/^\/api\/meals\/(\d+)$/))) {
@@ -399,13 +441,17 @@ export async function handleApi(req, res, url) {
         food = await resolveFood(foodName);
         foodId = food ? food.id : null;
       }
-      await db.prepare(`UPDATE meals SET date=?, time=?, foodId=?, foodName=?, grams=?, memo=?, isUnregistered=?, updatedAt=? WHERE id=?`).run(
+      // 写真: removePhoto または photo:null で削除、data URL 文字列で差し替え、未指定なら据え置き。
+      let photo = existing.photo;
+      if (body.removePhoto || body.photo === null) photo = null;
+      else if (typeof body.photo === 'string' && body.photo.startsWith('data:')) photo = body.photo;
+      await db.prepare(`UPDATE meals SET date=?, time=?, foodId=?, foodName=?, grams=?, memo=?, photo=?, isUnregistered=?, updatedAt=? WHERE id=?`).run(
         body.date ?? existing.date, body.time ?? existing.time,
         foodId, foodName, body.grams !== undefined ? Number(body.grams) : existing.grams,
-        body.memo ?? existing.memo, food ? 0 : (foodId ? 0 : 1), now(), id,
+        body.memo ?? existing.memo, photo, food ? 0 : (foodId ? 0 : 1), now(), id,
       );
-      const row = await db.prepare('SELECT * FROM meals WHERE id = ?').get(id);
-      return sendJson(res, 200, { ...row, isUnregistered: !!row.isUnregistered });
+      const row = await db.prepare(`SELECT ${MEAL_COLS} FROM meals WHERE id = ?`).get(id);
+      return sendJson(res, 200, { ...row, isUnregistered: !!row.isUnregistered, hasPhoto: !!row.hasPhoto });
     }
     if (method === 'DELETE') {
       await db.prepare('DELETE FROM meals WHERE id = ?').run(id);

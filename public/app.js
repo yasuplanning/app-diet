@@ -109,15 +109,17 @@ const routes = {
 async function router() {
   const hash = location.hash.replace(/^#/, '') || '/dashboard';
   const path = hash.split('?')[0];
-  // 履歴の日別内訳: /history/YYYY-MM-DD（末尾スラッシュ任意）はその日1日分を表示。
+  // 履歴の日別サブ画面: /history/YYYY-MM-DD（内訳）と /history/YYYY-MM-DD/matrix（栄養素×食材の行列）。
+  const matrixMatch = path.match(/^\/history\/(\d{4}-\d{2}-\d{2})\/matrix\/?$/);
   const dayMatch = path.match(/^\/history\/(\d{4}-\d{2}-\d{2})\/?$/);
   document.querySelectorAll('.nav a').forEach((a) => {
     const href = a.getAttribute('href');
-    a.classList.toggle('active', href === '#' + path || (!!dayMatch && href === '#/history'));
+    a.classList.toggle('active', href === '#' + path || ((!!dayMatch || !!matrixMatch) && href === '#/history'));
   });
   app.innerHTML = '<div class="empty">読み込み中…</div>';
   try {
-    if (dayMatch) await viewHistoryDay(dayMatch[1]);
+    if (matrixMatch) await viewHistoryMatrix(matrixMatch[1]);
+    else if (dayMatch) await viewHistoryDay(dayMatch[1]);
     else { const view = routes[path] || viewDashboard; await view(new URLSearchParams(hash.split('?')[1] || '')); }
   }
   catch (e) { app.innerHTML = `<div class="card"><p class="status-over">読み込みエラー: ${esc(e.message)}</p></div>`; }
@@ -446,7 +448,10 @@ async function viewHistory() {
     <h1>履歴</h1>
     <div class="card">
       <div class="flex-between">
-        <h2>栄養素の不足・過剰チェック <a href="#/history/${date}/" id="breakdown-link" class="pill" style="cursor:pointer">内訳チェック →</a></h2>
+        <h2>栄養素の不足・過剰チェック
+          <a href="#/history/${date}/" id="breakdown-link" class="pill" style="cursor:pointer">内訳チェック →</a>
+          <a href="#/history/${date}/matrix" id="matrix-link" class="pill" style="cursor:pointer">行列生成 →</a>
+        </h2>
         <div><label class="small muted">日付 </label><input type="date" id="check-date" value="${date}" max="${date}"></div>
       </div>
       <div class="table-wrap"><table><thead><tr><th>栄養素</th><th class="num">摂取量</th><th class="num">目安</th><th>判定</th></tr></thead><tbody id="check-body">${checkRows(day.total)}</tbody></table></div>
@@ -458,6 +463,7 @@ async function viewHistory() {
   const cd = $('#check-date');
   cd.onchange = async () => {
     $('#breakdown-link').setAttribute('href', `#/history/${cd.value}/`);
+    $('#matrix-link').setAttribute('href', `#/history/${cd.value}/matrix`);
     const body = $('#check-body');
     body.innerHTML = '<tr><td colspan="4" class="muted">読み込み中…</td></tr>';
     try {
@@ -523,6 +529,43 @@ async function viewHistoryDay(date) {
     if (!confirm('このサプリ記録を削除しますか？')) return;
     await api.del(`/api/supplement-logs/${b.dataset.supdel}`); toast('削除しました'); reload();
   }));
+}
+
+// 履歴の行列: 行=栄養素 / 列=食材・サプリ。各セルにその食材が寄与した栄養量を並べ、
+// どの食材がどの栄養素にどれだけ効いているかを一望する（#/history/YYYY-MM-DD/matrix）。
+async function viewHistoryMatrix(date) {
+  const day = await api.get(`/api/nutrition/daily?date=${date}`);
+  const meals = day.meals || [];
+  const supps = day.supplements || [];
+  // 列 = その日の食材（食事）＋サプリ。各列はそれ自身の栄養寄与 nutrients を持つ。
+  const cols = [
+    ...meals.map((m) => ({ label: m.foodName, sub: `${num(m.grams, 0)}g`, nutrients: m.nutrients, unreg: m.isUnregistered })),
+    ...supps.map((s) => ({ label: `💊 ${s.supplementName}`, sub: `${num(s.units, 0)}個`, nutrients: s.nutrients, supp: true })),
+  ];
+
+  // セル: 未登録で寄与量が不明なら「?」、そうでなければ数値。
+  const cell = (obj) => (!obj || obj.partial)
+    ? '<span class="muted" title="この食材・サプリは栄養データが未登録で寄与量が不明です">?</span>'
+    : num(obj.value, 1);
+
+  const headCols = cols.map((c) => `<th class="num">${esc(c.label)}${c.unreg ? ' <span class="pill unreg">未登録</span>' : ''}<div class="muted small" style="font-weight:normal">${esc(c.sub)}</div></th>`).join('');
+  const bodyRows = META.nutrients.map((n) => {
+    const cells = cols.map((c) => `<td class="num">${cell(c.nutrients[n.key])}</td>`).join('');
+    const tot = day.total[n.key];
+    return `<tr><th style="text-align:left;white-space:nowrap">${n.label} <span class="muted small">${n.unit}</span></th>${cells}<td class="num"><b>${tot ? num(tot.value, 1) : '—'}</b></td></tr>`;
+  }).join('');
+
+  app.innerHTML = `
+    <div class="flex-between"><h1>栄養素 × 食材 行列 <span class="muted small">(${date})</span></h1><a href="#/history" class="pill">← チェックへ戻る</a></div>
+    <div class="card">
+      <div class="flex-between"><h2>栄養素の内訳（行列）</h2><a href="#/history/${date}/" class="pill">内訳チェック →</a></div>
+      ${cols.length ? `<div class="table-wrap"><table>
+        <thead><tr><th style="text-align:left">栄養素</th>${headCols}<th class="num">合計</th></tr></thead>
+        <tbody>${bodyRows}</tbody>
+      </table></div>
+      <p class="small muted">各セルは、その食材・サプリが実際の摂取量に対して寄与した栄養量です。行（横方向）を見ると、どの食材がその栄養素にどれだけ効いているか一望できます。「?」は栄養データ未登録で寄与量が不明なことを示します。合計はサプリを含む1日の摂取量です。</p>`
+      : '<div class="empty">この日の記録はありません。</div>'}
+    </div>`;
 }
 
 // 食事記録の編集モーダル。食材名を変えると食材マスタと突き合わせ直す（PUT側で解決）。

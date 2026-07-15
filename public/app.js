@@ -76,12 +76,17 @@ const routes = {
 async function router() {
   const hash = location.hash.replace(/^#/, '') || '/dashboard';
   const path = hash.split('?')[0];
+  // 履歴の日別内訳: /history/YYYY-MM-DD（末尾スラッシュ任意）はその日1日分を表示。
+  const dayMatch = path.match(/^\/history\/(\d{4}-\d{2}-\d{2})\/?$/);
   document.querySelectorAll('.nav a').forEach((a) => {
-    a.classList.toggle('active', a.getAttribute('href') === '#' + path);
+    const href = a.getAttribute('href');
+    a.classList.toggle('active', href === '#' + path || (!!dayMatch && href === '#/history'));
   });
-  const view = routes[path] || viewDashboard;
   app.innerHTML = '<div class="empty">読み込み中…</div>';
-  try { await view(new URLSearchParams(hash.split('?')[1] || '')); }
+  try {
+    if (dayMatch) await viewHistoryDay(dayMatch[1]);
+    else { const view = routes[path] || viewDashboard; await view(new URLSearchParams(hash.split('?')[1] || '')); }
+  }
   catch (e) { app.innerHTML = `<div class="card"><p class="status-over">読み込みエラー: ${esc(e.message)}</p></div>`; }
 }
 
@@ -95,8 +100,6 @@ async function viewDashboard() {
     api.get('/api/body'),
     api.get('/api/energy'),
   ]);
-  const g = d.goals || {};
-  const t = d.today.total;
 
   // 過去1週間（d.week は date を末尾とする直近7日）を、体重・体脂肪率・カロリー収支に整形。
   const bodyMap = {}; for (const r of bodyRecs) bodyMap[r.date] = r;
@@ -113,24 +116,6 @@ async function viewDashboard() {
     };
   });
 
-  // 栄養素の不足・過剰チェック（指定日の集計に対して判定するテーブル行を返す）
-  const checkRows = (total) => META.nutrients.map((n) => {
-    const o = total[n.key]; if (!o) return '';
-    const ref = (n.key === 'calories' && g.targetCalories) || (n.key === 'protein' && g.targetProtein)
-      || (n.key === 'fiber' && g.targetFiber) || (n.key === 'salt' && g.saltLimit) || n.ref;
-    if (!ref) return '';
-    const ratio = o.value / ref;
-    let status = '', cls = 'status-ok';
-    if (n.limit || n.key === 'salt') { // 上限系
-      if (ratio > 1) { status = '過剰'; cls = 'status-over'; } else { status = '適正'; cls = 'status-ok'; }
-    } else {
-      if (ratio < 0.5) { status = '不足'; cls = 'status-low'; }
-      else if (ratio > 1.5) { status = '過剰'; cls = 'status-over'; }
-      else { status = '適正'; cls = 'status-ok'; }
-    }
-    return `<tr><td>${n.label}</td><td class="num">${nutrientCell(o)}</td><td class="num muted">${ref}${n.unit}</td><td class="${cls}">${status}</td></tr>`;
-  }).join('');
-
   app.innerHTML = `
     <h1>ホーム / ダッシュボード <span class="muted small">(${date})</span></h1>
 
@@ -142,26 +127,7 @@ async function viewDashboard() {
       ${netLineChart(week)}
       <p class="small muted">プラス＝摂取が消費を上回る／マイナス＝消費が上回る。消費カロリー未入力の日は線に表示されません。体重・体脂肪率は各系列内の増減が見えるよう縦軸を拡大しています。</p>
     </div>
-
-    <div class="card">
-      <div class="flex-between"><h2>栄養素の不足・過剰チェック</h2>
-        <div><label class="small muted">日付 </label><input type="date" id="check-date" value="${date}" max="${date}"></div>
-      </div>
-      <div class="table-wrap"><table><thead><tr><th>栄養素</th><th class="num">摂取量</th><th class="num">目安</th><th>判定</th></tr></thead><tbody id="check-body">${checkRows(t)}</tbody></table></div>
-      <p class="small muted">選択した日の摂取量を目安（目標設定値または一般的な推奨量。食塩は上限）と比較します。</p>
-    </div>
   `;
-
-  // 日付を変えたらその日の栄養集計を取り直してチェック表だけ更新
-  const cd = $('#check-date');
-  cd.onchange = async () => {
-    const body = $('#check-body');
-    body.innerHTML = '<tr><td colspan="4" class="muted">読み込み中…</td></tr>';
-    try {
-      const day = await api.get(`/api/nutrition/daily?date=${cd.value}`);
-      body.innerHTML = checkRows(day.total);
-    } catch (e) { toast(e.message, true); }
-  };
 }
 
 // 過去1週間の体重・体脂肪率を、日ごとに細い縦棒2本で描く。
@@ -394,17 +360,67 @@ function promptRegister(name) {
 // ======================================================
 // 食事履歴
 // ======================================================
+// 履歴タブ = 栄養素の不足・過剰チェック（日付選択式）。
+// 「内訳チェック」で選択中の日の食事・サプリ記録一覧（#/history/DATE）へ遷移する。
 async function viewHistory() {
+  const date = todayStr();
+  const g = (await api.get('/api/goals')) || {};
+
+  // 指定日の集計 total に対して不足・過剰を判定するテーブル行を返す。
+  const checkRows = (total) => META.nutrients.map((n) => {
+    const o = total[n.key]; if (!o) return '';
+    const ref = (n.key === 'calories' && g.targetCalories) || (n.key === 'protein' && g.targetProtein)
+      || (n.key === 'fiber' && g.targetFiber) || (n.key === 'salt' && g.saltLimit) || n.ref;
+    if (!ref) return '';
+    const ratio = o.value / ref;
+    let status = '', cls = 'status-ok';
+    if (n.limit || n.key === 'salt') { // 上限系
+      if (ratio > 1) { status = '過剰'; cls = 'status-over'; } else { status = '適正'; cls = 'status-ok'; }
+    } else {
+      if (ratio < 0.5) { status = '不足'; cls = 'status-low'; }
+      else if (ratio > 1.5) { status = '過剰'; cls = 'status-over'; }
+      else { status = '適正'; cls = 'status-ok'; }
+    }
+    return `<tr><td>${n.label}</td><td class="num">${nutrientCell(o)}</td><td class="num muted">${ref}${n.unit}</td><td class="${cls}">${status}</td></tr>`;
+  }).join('');
+
+  const day = await api.get(`/api/nutrition/daily?date=${date}`);
+
+  app.innerHTML = `
+    <h1>履歴</h1>
+    <div class="card">
+      <div class="flex-between">
+        <h2>栄養素の不足・過剰チェック <a href="#/history/${date}/" id="breakdown-link" class="pill" style="cursor:pointer">内訳チェック →</a></h2>
+        <div><label class="small muted">日付 </label><input type="date" id="check-date" value="${date}" max="${date}"></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>栄養素</th><th class="num">摂取量</th><th class="num">目安</th><th>判定</th></tr></thead><tbody id="check-body">${checkRows(day.total)}</tbody></table></div>
+      <p class="small muted">選択した日の摂取量を目安（目標設定値または一般的な推奨量。食塩は上限）と比較します。「内訳チェック」でその日の食事・サプリの記録一覧を確認できます。</p>
+    </div>
+  `;
+
+  // 日付を変えたらチェック表を取り直し、内訳チェックのリンク先もその日に更新する。
+  const cd = $('#check-date');
+  cd.onchange = async () => {
+    $('#breakdown-link').setAttribute('href', `#/history/${cd.value}/`);
+    const body = $('#check-body');
+    body.innerHTML = '<tr><td colspan="4" class="muted">読み込み中…</td></tr>';
+    try {
+      const d2 = await api.get(`/api/nutrition/daily?date=${cd.value}`);
+      body.innerHTML = checkRows(d2.total);
+    } catch (e) { toast(e.message, true); }
+  };
+}
+
+// 履歴の内訳: 指定日1日分の食事・サプリ記録を時系列で表示（#/history/YYYY-MM-DD）。
+async function viewHistoryDay(date) {
   const [meals, suppLogs] = await Promise.all([
-    api.get('/api/meals'),
-    api.get('/api/supplement-logs'),
+    api.get(`/api/meals?date=${date}`),
+    api.get(`/api/supplement-logs?date=${date}`),
   ]);
-  const byDate = {};
-  meals.forEach((m) => (byDate[m.date] ||= []).push({ ...m, kind: 'meal' }));
-  suppLogs.forEach((s) => (byDate[s.date] ||= []).push({ ...s, kind: 'supp' }));
-  const dates = Object.keys(byDate).sort().reverse();
-  // 各日の記録を時刻順に並べ替え（食事とサプリを時系列で混在表示）。
-  dates.forEach((d) => byDate[d].sort((a, b) => (a.time || '').localeCompare(b.time || '')));
+  const rows = [
+    ...meals.map((m) => ({ ...m, kind: 'meal' })),
+    ...suppLogs.map((s) => ({ ...s, kind: 'supp' })),
+  ].sort((a, b) => (a.time || '').localeCompare(b.time || ''));
 
   const rowHtml = (r) => r.kind === 'supp' ? `<tr>
         <td>${esc(r.time || '')}</td>
@@ -418,21 +434,22 @@ async function viewHistory() {
         <td><button class="ghost sm" data-del="${r.id}">削除</button></td>
       </tr>`;
 
-  app.innerHTML = `<h1>食事履歴</h1>` + (dates.length ? dates.map((d) => `
+  app.innerHTML = `
+    <div class="flex-between"><h1>食事履歴 <span class="muted small">(${date})</span></h1><a href="#/history" class="pill">← チェックへ戻る</a></div>
     <div class="card">
-      <div class="flex-between"><h2>${d}</h2><a href="#/input?date=${d}" class="pill">この日に追加</a></div>
-      <div class="table-wrap"><table><thead><tr><th>時刻</th><th>食材・サプリ</th><th class="num">量</th><th>メモ</th><th></th></tr></thead><tbody>
-      ${byDate[d].map(rowHtml).join('')}
-      </tbody></table></div>
-    </div>`).join('') : '<div class="card empty">まだ食事記録がありません。<a href="#/input">食事入力</a>から始めましょう。</div>');
+      <div class="flex-between"><h2>${date}</h2><a href="#/input?date=${date}" class="pill">この日に追加</a></div>
+      ${rows.length ? `<div class="table-wrap"><table><thead><tr><th>時刻</th><th>食材・サプリ</th><th class="num">量</th><th>メモ</th><th></th></tr></thead><tbody>
+        ${rows.map(rowHtml).join('')}
+      </tbody></table></div>` : '<div class="empty">この日の記録はありません。</div>'}
+    </div>`;
 
   app.querySelectorAll('[data-del]').forEach((b) => b.addEventListener('click', async () => {
     if (!confirm('この記録を削除しますか？')) return;
-    await api.del(`/api/meals/${b.dataset.del}`); toast('削除しました'); viewHistory();
+    await api.del(`/api/meals/${b.dataset.del}`); toast('削除しました'); viewHistoryDay(date);
   }));
   app.querySelectorAll('[data-supdel]').forEach((b) => b.addEventListener('click', async () => {
     if (!confirm('このサプリ記録を削除しますか？')) return;
-    await api.del(`/api/supplement-logs/${b.dataset.supdel}`); toast('削除しました'); viewHistory();
+    await api.del(`/api/supplement-logs/${b.dataset.supdel}`); toast('削除しました'); viewHistoryDay(date);
   }));
 }
 

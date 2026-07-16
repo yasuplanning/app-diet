@@ -552,7 +552,9 @@ async function viewHistoryMatrix(date) {
   const bodyRows = META.nutrients.map((n) => {
     const cells = cols.map((c) => `<td class="num">${cell(c.nutrients[n.key])}</td>`).join('');
     const tot = day.total[n.key];
-    return `<tr><th style="text-align:left;white-space:nowrap">${n.label} <span class="muted small">${n.unit}</span></th>${cells}<td class="num"><b>${tot ? num(tot.value, 1) : '—'}</b></td></tr>`;
+    // 目安は栄養素定義の固定値 n.ref（食塩は上限）。基準なしは「—」。
+    const refCell = (n.ref != null) ? `${num(n.ref, 1)}${n.limit ? ' (上限)' : ''}` : '—';
+    return `<tr><th style="text-align:left;white-space:nowrap">${n.label} <span class="muted small">${n.unit}</span></th>${cells}<td class="num"><b>${tot ? num(tot.value, 1) : '—'}</b></td><td class="num muted">${refCell}</td></tr>`;
   }).join('');
 
   app.innerHTML = `
@@ -560,10 +562,10 @@ async function viewHistoryMatrix(date) {
     <div class="card">
       <div class="flex-between"><h2>栄養素の内訳（行列）</h2><a href="#/history/${date}/" class="pill">内訳チェック →</a></div>
       ${cols.length ? `<div class="table-wrap"><table>
-        <thead><tr><th style="text-align:left">栄養素</th>${headCols}<th class="num">合計</th></tr></thead>
+        <thead><tr><th style="text-align:left">栄養素</th>${headCols}<th class="num">合計</th><th class="num">目安/日</th></tr></thead>
         <tbody>${bodyRows}</tbody>
       </table></div>
-      <p class="small muted">各セルは、その食材・サプリが実際の摂取量に対して寄与した栄養量です。行（横方向）を見ると、どの食材がその栄養素にどれだけ効いているか一望できます。「?」は栄養データ未登録で寄与量が不明なことを示します。合計はサプリを含む1日の摂取量です。</p>`
+      <p class="small muted">各セルは、その食材・サプリが実際の摂取量に対して寄与した栄養量です。行（横方向）を見ると、どの食材がその栄養素にどれだけ効いているか一望できます。「?」は栄養データ未登録で寄与量が不明なことを示します。合計はサプリを含む1日の摂取量、「目安/日」は成人のおおよその1日の摂取目安量（固定値・食塩は上限）です。</p>`
       : '<div class="empty">この日の記録はありません。</div>'}
     </div>`;
 }

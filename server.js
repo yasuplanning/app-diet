@@ -364,7 +364,7 @@ export async function handleApi(req, res, url) {
 
   // --- meals ---
   // 一覧・集計では大きい photo 本体は返さず、有無だけ hasPhoto で返す（画像は専用エンドポイントで取得）。
-  const MEAL_COLS = 'id, date, time, foodId, foodName, grams, memo, isUnregistered, createdAt, updatedAt, (photo IS NOT NULL) AS hasPhoto';
+  const MEAL_COLS = 'id, date, time, foodId, foodName, grams, memo, nutrients, isUnregistered, createdAt, updatedAt, (photo IS NOT NULL) AS hasPhoto';
   if (p === '/api/meals' && method === 'GET') {
     const date = q.get('date');
     const start = q.get('start');
@@ -400,16 +400,35 @@ export async function handleApi(req, res, url) {
     return sendJson(res, 201, { ...row, isUnregistered: !!row.isUnregistered, hasPhoto: !!row.hasPhoto, unregistered: !!isUnregistered });
   }
 
+  // 方法3: 1食まるごと記録（マスタ不要）。栄養素は貼り付けテキストから解析し meals に直接保存、量=1。
+  if (p === '/api/meals/entry' && method === 'POST') {
+    const body = await readBody(req);
+    const name = (body.foodName || '').trim();
+    if (!name || !body.date) return sendError(res, 400, '食事名称と日付は必須です');
+    const parsed = parseFoodsText(body.nutrientsText || '', { defaultName: name });
+    const block = parsed[0];
+    if (!block || block.matched === 0) {
+      return sendError(res, 400, '栄養素データを認識できませんでした（カロリー・タンパク質などの栄養素名と数値の行を貼り付けてください）');
+    }
+    const nutrientsJson = JSON.stringify(block.values);
+    const info = await db.prepare(`INSERT INTO meals (date, time, foodId, foodName, grams, memo, nutrients, isUnregistered, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`).run(
+      body.date, body.time || '', null, name, 1, body.memo || '', nutrientsJson, 0, now(), now(),
+    );
+    const row = await db.prepare(`SELECT ${MEAL_COLS} FROM meals WHERE id = ?`).get(info.lastInsertRowid);
+    return sendJson(res, 201, { ...row, isUnregistered: !!row.isUnregistered, hasPhoto: !!row.hasPhoto, matched: block.matched });
+  }
+
   // 前日と同じ食事をコピー: { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD' }
   if (p === '/api/meals/copy' && method === 'POST') {
     const body = await readBody(req);
     if (!body.from || !body.to) return sendError(res, 400, 'from と to は必須です');
     const src = await db.prepare('SELECT * FROM meals WHERE date = ? ORDER BY time, id').all(body.from);
-    const stmt = db.prepare(`INSERT INTO meals (date, time, foodId, foodName, grams, memo, photo, isUnregistered, createdAt, updatedAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const stmt = db.prepare(`INSERT INTO meals (date, time, foodId, foodName, grams, memo, photo, nutrients, isUnregistered, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     let count = 0;
     for (const s of src) {
-      await stmt.run(body.to, s.time, s.foodId, s.foodName, s.grams, s.memo, s.photo, s.isUnregistered, now(), now());
+      await stmt.run(body.to, s.time, s.foodId, s.foodName, s.grams, s.memo, s.photo, s.nutrients, s.isUnregistered, now(), now());
       count++;
     }
     return sendJson(res, 201, { copied: count });
@@ -434,21 +453,41 @@ export async function handleApi(req, res, url) {
 
     if (method === 'PUT') {
       const body = await readBody(req);
-      let foodId = ('foodId' in body) ? (body.foodId ? Number(body.foodId) : null) : existing.foodId;
       const foodName = body.foodName ?? existing.foodName;
-      let food = foodId ? await db.prepare('SELECT * FROM foods WHERE id = ?').get(foodId) : null;
-      if (!food && ('foodName' in body || 'foodId' in body)) {
-        food = await resolveFood(foodName);
-        foodId = food ? food.id : null;
+
+      // 方法3（自己完結レコード）の判定と栄養素の更新。nutrientsText を渡すと貼り付けから再解析して差し替え。
+      const hadOwn = existing.nutrients != null && existing.nutrients !== '';
+      const replacing = typeof body.nutrientsText === 'string' && body.nutrientsText.trim() !== '';
+      let nutrients = existing.nutrients;
+      if (replacing) {
+        const parsed = parseFoodsText(body.nutrientsText, { defaultName: (foodName || '食事').trim() });
+        if (!parsed[0] || parsed[0].matched === 0) return sendError(res, 400, '栄養素データを認識できませんでした');
+        nutrients = JSON.stringify(parsed[0].values);
       }
+      const selfContained = hadOwn || replacing;
+
       // 写真: removePhoto または photo:null で削除、data URL 文字列で差し替え、未指定なら据え置き。
       let photo = existing.photo;
       if (body.removePhoto || body.photo === null) photo = null;
       else if (typeof body.photo === 'string' && body.photo.startsWith('data:')) photo = body.photo;
-      await db.prepare(`UPDATE meals SET date=?, time=?, foodId=?, foodName=?, grams=?, memo=?, photo=?, isUnregistered=?, updatedAt=? WHERE id=?`).run(
+
+      let foodId, isUnreg;
+      if (selfContained) {
+        // マスタに紐付けない自己完結レコード（方法3）。名前・メモ・栄養素・日時のみ編集対象。
+        foodId = null; isUnreg = 0;
+      } else {
+        foodId = ('foodId' in body) ? (body.foodId ? Number(body.foodId) : null) : existing.foodId;
+        let food = foodId ? await db.prepare('SELECT * FROM foods WHERE id = ?').get(foodId) : null;
+        if (!food && ('foodName' in body || 'foodId' in body)) {
+          food = await resolveFood(foodName);
+          foodId = food ? food.id : null;
+        }
+        isUnreg = food ? 0 : (foodId ? 0 : 1);
+      }
+      await db.prepare(`UPDATE meals SET date=?, time=?, foodId=?, foodName=?, grams=?, memo=?, photo=?, nutrients=?, isUnregistered=?, updatedAt=? WHERE id=?`).run(
         body.date ?? existing.date, body.time ?? existing.time,
         foodId, foodName, body.grams !== undefined ? Number(body.grams) : existing.grams,
-        body.memo ?? existing.memo, photo, food ? 0 : (foodId ? 0 : 1), now(), id,
+        body.memo ?? existing.memo, photo, nutrients, isUnreg, now(), id,
       );
       const row = await db.prepare(`SELECT ${MEAL_COLS} FROM meals WHERE id = ?`).get(id);
       return sendJson(res, 200, { ...row, isUnregistered: !!row.isUnregistered, hasPhoto: !!row.hasPhoto });

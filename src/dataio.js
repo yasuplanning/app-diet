@@ -153,19 +153,26 @@ export async function applyImport(zipBuffer, opts = {}) {
   }
 
   // --- meals（完全一致で重複スキップ、foodId は名前で貼り直す）---
-  const insertMeal = db.prepare(`INSERT INTO meals (date, time, foodId, foodName, grams, memo, isUnregistered, createdAt, updatedAt)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const insertMeal = db.prepare(`INSERT INTO meals (date, time, foodId, foodName, grams, memo, photo, nutrients, isUnregistered, createdAt, updatedAt)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
   for (const m of impMeals) {
     const dup = await db.prepare('SELECT id FROM meals WHERE date=? AND time=? AND foodName=? AND grams=?')
       .get(m.date, m.time ?? '', m.foodName, m.grams);
     if (dup) { summary.meals.skipped++; continue; }
-    // 食材IDを名前で解決（インポートしたfoodsの対応、無ければ既存マスタ）
-    let foodId = nameToId[m.foodName] ?? null;
-    if (!foodId) {
-      const f = await db.prepare('SELECT id FROM foods WHERE name = ?').get(m.foodName);
-      foodId = f ? f.id : null;
+    // 方法3（自己完結レコード）はマスタに紐付けず栄養素を保持。それ以外は食材IDを名前で解決。
+    const selfContained = m.nutrients != null && m.nutrients !== '';
+    let foodId = null;
+    if (!selfContained) {
+      foodId = nameToId[m.foodName] ?? null;
+      if (!foodId) {
+        const f = await db.prepare('SELECT id FROM foods WHERE name = ?').get(m.foodName);
+        foodId = f ? f.id : null;
+      }
     }
-    await insertMeal.run(m.date, m.time ?? '', foodId, m.foodName, m.grams, m.memo ?? '', foodId ? 0 : 1, now(), now());
+    await insertMeal.run(
+      m.date, m.time ?? '', foodId, m.foodName, m.grams, m.memo ?? '', m.photo ?? null, m.nutrients ?? null,
+      selfContained ? 0 : (foodId ? 0 : 1), now(), now(),
+    );
     summary.meals.added++;
   }
 

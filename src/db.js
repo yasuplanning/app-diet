@@ -100,6 +100,7 @@ export async function setup() {
       grams DOUBLE PRECISION NOT NULL,
       memo TEXT,
       photo TEXT,
+      nutrients TEXT,
       isUnregistered INTEGER NOT NULL DEFAULT 0,
       createdAt TEXT NOT NULL,
       updatedAt TEXT NOT NULL,
@@ -165,6 +166,8 @@ export async function setup() {
   await exec('ALTER TABLE meals DROP COLUMN IF EXISTS mealType');
   // マイグレーション: 食事写真（縮小した data URL を保存）の列を追加。
   await exec('ALTER TABLE meals ADD COLUMN IF NOT EXISTS photo TEXT');
+  // マイグレーション: 1食まるごと記録（マスタ不要）の栄養素をJSONで保持する列を追加。
+  await exec('ALTER TABLE meals ADD COLUMN IF NOT EXISTS nutrients TEXT');
 
   // goals は必ず1行存在させる
   const goalCount = await prepare('SELECT COUNT(*)::int AS c FROM goals').get();

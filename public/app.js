@@ -282,6 +282,19 @@ async function viewInput(params) {
       </div>
       <p class="small muted" style="margin-top:10px">記録した内容は<a href="#/history">履歴</a>で確認・編集・削除できます。</p>
     </div>
+
+    <div class="card">
+      <h2>3. 1回の食事をまるごと記録（マスタ不要）</h2>
+      <p class="small muted">外食・自炊などマスタに無い食事を、栄養素を貼り付けてそのまま1食（量=1）として記録します。ここで入力した栄養素は食材マスタには登録されず、上の「食材名」候補にも出ません。日付・時刻は上部の入力欄を使います。</p>
+      <label>食事名称 *</label>
+      <input type="text" id="e-name" placeholder="例: 焼肉定食">
+      <label>メモ（メニュー内容など・栄養計算とは独立した任意メモ）</label>
+      <input type="text" id="e-memo" placeholder="例: カルビ、ロース、ライス大盛り">
+      <label>栄養素（食材マスタと同形式でコピペ・必須）</label>
+      <textarea id="e-nutrients" rows="8" style="width:100%;font-family:monospace" placeholder="カロリー&#10;約800 kcal&#10;タンパク質&#10;約40 g&#10;脂質&#10;約45 g&#10;…"></textarea>
+      <div class="row" style="margin-top:12px"><button id="btn-entry">記録する</button></div>
+      <p class="small muted" style="margin-top:8px">貼り付けた合計栄養量がその1食分としてそのまま加算されます。記録後は<a href="#/history">履歴</a>の内訳・行列に反映され、編集で名称・メモ・栄養素を修正できます。</p>
+    </div>
   `;
 
   // --- suggest ---
@@ -387,6 +400,22 @@ async function viewInput(params) {
     try { const r = await api.post('/api/meals/copy', { from, to }); toast(`${r.copied} 件コピーしました`); }
     catch (e) { toast(e.message, true); }
   });
+
+  // --- 方法3: 1回の食事をまるごと記録 ---
+  $('#btn-entry').addEventListener('click', async () => {
+    const name = $('#e-name').value.trim();
+    const nutrientsText = $('#e-nutrients').value;
+    if (!name) { toast('食事名称を入力してください', true); return; }
+    if (!nutrientsText.trim()) { toast('栄養素を貼り付けてください', true); return; }
+    try {
+      const r = await api.post('/api/meals/entry', {
+        date: $('#f-date').value, time: $('#f-time').value,
+        foodName: name, memo: $('#e-memo').value, nutrientsText,
+      });
+      toast(`記録しました（栄養素 ${r.matched} 項目）`);
+      $('#e-name').value = ''; $('#e-memo').value = ''; $('#e-nutrients').value = '';
+    } catch (e) { toast(e.message, true); }
+  });
 }
 
 // 未登録食材 → 登録を促す
@@ -491,8 +520,8 @@ async function viewHistoryDay(date) {
         <td><button class="ghost sm" data-supedit="${r.id}">編集</button> <button class="ghost sm" data-supdel="${r.id}">削除</button></td>
       </tr>` : `<tr>
         <td>${esc(r.time || '')}</td>
-        <td>${r.hasPhoto ? `<img src="/api/meals/${r.id}/photo" alt="写真" data-photo="${r.id}" style="height:34px;width:34px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:6px;cursor:pointer">` : ''}${esc(r.foodName)} ${r.isUnregistered ? '<span class="pill unreg">未登録</span>' : ''}</td>
-        <td class="num">${num(r.grams, 0)}g</td><td class="muted small">${esc(r.memo || '')}</td>
+        <td>${r.hasPhoto ? `<img src="/api/meals/${r.id}/photo" alt="写真" data-photo="${r.id}" style="height:34px;width:34px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:6px;cursor:pointer">` : ''}${esc(r.foodName)} ${r.nutrients ? '<span class="pill">1食記録</span>' : (r.isUnregistered ? '<span class="pill unreg">未登録</span>' : '')}</td>
+        <td class="num">${r.nutrients ? '1食' : `${num(r.grams, 0)}g`}</td><td class="muted small">${esc(r.memo || '')}</td>
         <td><button class="ghost sm" data-edit="${r.id}">編集</button> <button class="ghost sm" data-del="${r.id}">削除</button></td>
       </tr>`;
 
@@ -539,7 +568,7 @@ async function viewHistoryMatrix(date) {
   const supps = day.supplements || [];
   // 列 = その日の食材（食事）＋サプリ。各列はそれ自身の栄養寄与 nutrients を持つ。
   const cols = [
-    ...meals.map((m) => ({ label: m.foodName, sub: `${num(m.grams, 0)}g`, nutrients: m.nutrients, unreg: m.isUnregistered })),
+    ...meals.map((m) => ({ label: m.foodName, sub: m.selfContained ? '1食' : `${num(m.grams, 0)}g`, nutrients: m.nutrients, unreg: m.isUnregistered })),
     ...supps.map((s) => ({ label: `💊 ${s.supplementName}`, sub: `${num(s.units, 0)}個`, nutrients: s.nutrients, supp: true })),
   ];
 
@@ -570,30 +599,35 @@ async function viewHistoryMatrix(date) {
     </div>`;
 }
 
-// 食事記録の編集モーダル。食材名を変えると食材マスタと突き合わせ直す（PUT側で解決）。
+// 食事記録の編集モーダル。通常(方法1/2)は食材名でマスタと突き合わせ直す。
+// 方法3（自己完結レコード＝meal.nutrients あり）は量=1固定・マスタ非依存で、栄養素も貼り付けで更新できる。
 function openMealEditor(meal, onSaved) {
   if (!meal) return;
+  const selfContained = !!meal.nutrients;
   let newPhoto = null; // 差し替え用に選んだ data URL（未選択なら null）
   const node = el(`<div class="modal">
-    <div class="flex-between"><h2>食事を編集</h2><button class="ghost sm" id="me-close">✕</button></div>
+    <div class="flex-between"><h2>${selfContained ? '1食記録を編集' : '食事を編集'}</h2><button class="ghost sm" id="me-close">✕</button></div>
     <div class="row">
       <div><label>日付</label><input type="date" id="me-date" value="${esc(meal.date)}"></div>
       <div><label>時刻</label><input type="time" id="me-time" value="${esc(meal.time || '')}"></div>
     </div>
     <div class="row">
-      <div style="flex:2"><label>食材名</label><input type="text" id="me-food" value="${esc(meal.foodName)}"></div>
-      <div><label>グラム数 (g)</label><input type="number" id="me-grams" min="0" step="1" value="${esc(meal.grams)}"></div>
+      <div style="flex:2"><label>${selfContained ? '食事名称' : '食材名'}</label><input type="text" id="me-food" value="${esc(meal.foodName)}"></div>
+      ${selfContained ? '<div><label>量</label><input type="text" value="1食（固定）" disabled></div>'
+        : '<div><label>グラム数 (g)</label><input type="number" id="me-grams" min="0" step="1" value="' + esc(meal.grams) + '"></div>'}
     </div>
     <label>メモ</label><input type="text" id="me-memo" value="${esc(meal.memo || '')}">
+    ${selfContained ? `<label>栄養素を貼り付けて更新（空欄なら変更なし）</label>
+      <textarea id="me-nutrients" rows="6" style="width:100%;font-family:monospace" placeholder="カロリー&#10;約800 kcal&#10;タンパク質&#10;約40 g&#10;…"></textarea>` : ''}
     <label>写真</label>
     <div>
       ${meal.hasPhoto ? `<img src="/api/meals/${meal.id}/photo" alt="写真" style="max-height:120px;border-radius:8px;display:block">
         <label style="display:flex;align-items:center;gap:6px;margin-top:6px"><input type="checkbox" id="me-photo-del" style="width:auto"> 写真を削除する</label>` : ''}
       <input type="file" id="me-photo-file" accept="image/*" capture="environment" style="margin-top:6px">
       <div id="me-photo-preview"></div>
-      <p class="small muted" style="margin-top:4px">${meal.hasPhoto ? '新しい写真を選ぶと差し替わります。' : '写真を追加できます。'}写真がある場合、食材名は空欄でも「名称未設定」で保存されます。</p>
+      <p class="small muted" style="margin-top:4px">${meal.hasPhoto ? '新しい写真を選ぶと差し替わります。' : '写真を追加できます。'}${selfContained ? '' : '写真がある場合、食材名は空欄でも「名称未設定」で保存されます。'}</p>
     </div>
-    <p class="small muted" style="margin-top:8px">食材名を変更すると食材マスタと突き合わせ直します（マスタに無い名前にすると未登録扱いになります）。</p>
+    ${selfContained ? '' : '<p class="small muted" style="margin-top:8px">食材名を変更すると食材マスタと突き合わせ直します（マスタに無い名前にすると未登録扱いになります）。</p>'}
     <div class="row" style="margin-top:16px"><button id="me-save">更新</button><button class="ghost" id="me-cancel">キャンセル</button></div>
   </div>`);
   node.querySelector('#me-close').onclick = closeModal;
@@ -608,17 +642,26 @@ function openMealEditor(meal, onSaved) {
     } catch (err) { toast(err.message || '画像の読み込みに失敗しました', true); }
   });
   node.querySelector('#me-save').onclick = async () => {
-    const grams = node.querySelector('#me-grams').value;
     const delPhoto = !!node.querySelector('#me-photo-del')?.checked;
-    const willHavePhoto = !delPhoto && (meal.hasPhoto || !!newPhoto);
-    const foodName = node.querySelector('#me-food').value.trim() || (willHavePhoto ? '名称未設定' : '');
-    if (grams === '') { toast('グラム数を入力してください', true); return; }
-    if (!foodName) { toast('食材名を入力するか写真を残してください', true); return; }
     const payload = {
       date: node.querySelector('#me-date').value,
       time: node.querySelector('#me-time').value,
-      foodId: null, foodName, grams, memo: node.querySelector('#me-memo').value,
+      memo: node.querySelector('#me-memo').value,
     };
+    if (selfContained) {
+      const name = node.querySelector('#me-food').value.trim();
+      if (!name) { toast('食事名称を入力してください', true); return; }
+      payload.foodName = name;
+      const nt = node.querySelector('#me-nutrients').value;
+      if (nt.trim()) payload.nutrientsText = nt; // 空欄なら栄養素は変更なし
+    } else {
+      const grams = node.querySelector('#me-grams').value;
+      const willHavePhoto = !delPhoto && (meal.hasPhoto || !!newPhoto);
+      const foodName = node.querySelector('#me-food').value.trim() || (willHavePhoto ? '名称未設定' : '');
+      if (grams === '') { toast('グラム数を入力してください', true); return; }
+      if (!foodName) { toast('食材名を入力するか写真を残してください', true); return; }
+      payload.foodId = null; payload.foodName = foodName; payload.grams = grams;
+    }
     if (delPhoto) payload.removePhoto = true;
     else if (newPhoto) payload.photo = newPhoto;
     try {

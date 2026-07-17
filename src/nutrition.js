@@ -11,7 +11,24 @@ export function emptyTotals() {
 }
 
 // 1食分（meal + food行）の栄養素を計算
+// 1食まるごと記録（方法3）の自己完結な栄養素。meal.nutrients(JSON) があればそれを返す。
+// 値は「その1食の合計栄養量」で、量=1としてそのまま加算する（per-100g のグラム換算はしない）。
+export function ownMealNutrients(meal) {
+  if (!meal || meal.nutrients == null || meal.nutrients === '') return null;
+  if (typeof meal.nutrients === 'object') return meal.nutrients;
+  try { return JSON.parse(meal.nutrients); } catch { return null; }
+}
+
 export function computeMeal(meal, food) {
+  const own = ownMealNutrients(meal);
+  if (own) {
+    const out = {};
+    for (const k of NUTRIENT_KEYS) {
+      const v = own[k];
+      out[k] = (v === null || v === undefined) ? { value: 0, partial: true } : { value: v, partial: false };
+    }
+    return out;
+  }
   const factor = meal.grams / 100;
   const out = {};
   for (const k of NUTRIENT_KEYS) {
@@ -29,6 +46,16 @@ export function computeMeal(meal, food) {
 export function aggregate(meals, foodsById) {
   const totals = emptyTotals();
   for (const meal of meals) {
+    // 方法3（1食まるごと記録）は自己完結の栄養素をそのまま加算する。
+    const own = ownMealNutrients(meal);
+    if (own) {
+      for (const k of NUTRIENT_KEYS) {
+        const v = own[k];
+        if (v === null || v === undefined) totals[k].partial = true;
+        else totals[k].value += v;
+      }
+      continue;
+    }
     const food = meal.foodId ? foodsById[meal.foodId] : null;
     const factor = meal.grams / 100;
     for (const k of NUTRIENT_KEYS) {
@@ -105,7 +132,7 @@ export function addSupplementTotals(totals, logs, suppById) {
 }
 
 // 集計で使う meals カラム。大きい photo 本体は除外し、有無だけ hasPhoto で返す。
-const MEAL_AGG_COLS = 'id, date, time, foodId, foodName, grams, memo, isUnregistered, createdAt, updatedAt, (photo IS NOT NULL) AS hasPhoto';
+const MEAL_AGG_COLS = 'id, date, time, foodId, foodName, grams, memo, nutrients, isUnregistered, createdAt, updatedAt, (photo IS NOT NULL) AS hasPhoto';
 
 // 指定日のmealを取得
 export function getMealsByDate(date) {
@@ -147,6 +174,7 @@ export async function daily(date) {
   const mealsOut = meals.map((m) => ({
     ...m,
     isUnregistered: !!m.isUnregistered,
+    selfContained: !!ownMealNutrients(m), // 方法3（1食まるごと記録）か
     nutrients: computeMeal(m, m.foodId ? foodsById[m.foodId] : null),
   }));
 
@@ -216,7 +244,7 @@ export async function series(start, end) {
 export function foodFrequency(start, end, limit = 20) {
   return db.prepare(`
     SELECT foodName, COUNT(*)::int AS count, SUM(grams)::float AS totalGrams
-    FROM meals WHERE date >= ? AND date <= ?
+    FROM meals WHERE date >= ? AND date <= ? AND nutrients IS NULL
     GROUP BY foodName ORDER BY count DESC, totalGrams DESC LIMIT ?
   `).all(start, end, limit);
 }
@@ -233,6 +261,7 @@ export function frequentFoods(limit = 12) {
              (COUNT(*) OVER (PARTITION BY foodName))::int AS count,
              MAX(date) OVER (PARTITION BY foodName) AS lastDate
       FROM meals
+      WHERE nutrients IS NULL
       ORDER BY foodName, date DESC, id DESC
     ) t
     ORDER BY count DESC, lastDate DESC

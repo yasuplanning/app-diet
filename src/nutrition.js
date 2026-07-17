@@ -76,19 +76,33 @@ function round(n) {
   return Math.round(n * 100) / 100;
 }
 
-// 食材をidで引けるマップを作る
+// マスタ（foods/supplements）のメモリキャッシュ。
+// 更新頻度が低い一方、daily/series/dashboard は毎回全件ロードするため、暖機中のインスタンスで
+// 往復を節約する。書き込み系ハンドラは invalidateFoods()/invalidateSupplements() で破棄すること。
+// サーバーレスで複数インスタンスが並走しても、TTLで最大 MASTER_TTL_MS の陳腐化に収める。
+const MASTER_TTL_MS = 30_000;
+let _foodsCache = null;       // { at, map }
+let _supplementsCache = null; // { at, map }
+export function invalidateFoods() { _foodsCache = null; }
+export function invalidateSupplements() { _supplementsCache = null; }
+
+// 食材をidで引けるマップを作る（TTL付きメモリキャッシュ）
 export async function loadFoodsMap() {
+  if (_foodsCache && (Date.now() - _foodsCache.at) < MASTER_TTL_MS) return _foodsCache.map;
   const rows = await db.prepare('SELECT * FROM foods').all();
   const map = {};
   for (const r of rows) map[r.id] = r;
+  _foodsCache = { at: Date.now(), map };
   return map;
 }
 
-// サプリをidで引けるマップを作る
+// サプリをidで引けるマップを作る（TTL付きメモリキャッシュ）
 export async function loadSupplementsMap() {
+  if (_supplementsCache && (Date.now() - _supplementsCache.at) < MASTER_TTL_MS) return _supplementsCache.map;
   const rows = await db.prepare('SELECT * FROM supplements').all();
   const map = {};
   for (const r of rows) map[r.id] = r;
+  _supplementsCache = { at: Date.now(), map };
   return map;
 }
 
@@ -168,9 +182,11 @@ export function daysBetween(start, end) {
 }
 
 // 日次集計
-export async function daily(date) {
-  const foodsById = await loadFoodsMap();
-  const meals = await getMealsByDate(date);
+// ctx を渡すと追加のDBアクセスをせず、ロード済みの foodsById/suppById/meals/suppLogs を
+// メモリ上でフィルタして使う（dashboard が日/週/月で1回の取得を共有するための口）。
+export async function daily(date, ctx = null) {
+  const foodsById = ctx?.foodsById ?? await loadFoodsMap();
+  const meals = ctx?.meals ? ctx.meals.filter((m) => m.date === date) : await getMealsByDate(date);
   const mealsOut = meals.map((m) => ({
     ...m,
     isUnregistered: !!m.isUnregistered,
@@ -179,8 +195,8 @@ export async function daily(date) {
   }));
 
   // サプリ（別管理・個数ベース）
-  const suppById = await loadSupplementsMap();
-  const suppLogs = await getSupplementLogsByDate(date);
+  const suppById = ctx?.suppById ?? await loadSupplementsMap();
+  const suppLogs = ctx?.suppLogs ? ctx.suppLogs.filter((l) => l.date === date) : await getSupplementLogsByDate(date);
   const supplementsOut = suppLogs.map((l) => ({
     ...l,
     nutrients: computeSupplementLog(l, l.supplementId ? suppById[l.supplementId] : null),
@@ -200,15 +216,20 @@ export async function daily(date) {
 }
 
 // 期間の日別系列 + 合計 + 平均
-export async function series(start, end) {
-  const foodsById = await loadFoodsMap();
-  const meals = await getMealsInRange(start, end);
+// ctx を渡すと追加のDBアクセスをせず、ロード済みデータを範囲でフィルタして使う（daily と同様）。
+export async function series(start, end, ctx = null) {
+  const foodsById = ctx?.foodsById ?? await loadFoodsMap();
+  const meals = ctx?.meals
+    ? ctx.meals.filter((m) => m.date >= start && m.date <= end)
+    : await getMealsInRange(start, end);
   const byDate = {};
   for (const m of meals) (byDate[m.date] ||= []).push(m);
 
   // サプリ（別管理・個数ベース）を日付ごとにまとめる
-  const suppById = await loadSupplementsMap();
-  const suppLogs = await getSupplementLogsInRange(start, end);
+  const suppById = ctx?.suppById ?? await loadSupplementsMap();
+  const suppLogs = ctx?.suppLogs
+    ? ctx.suppLogs.filter((l) => l.date >= start && l.date <= end)
+    : await getSupplementLogsInRange(start, end);
   const suppByDate = {};
   for (const l of suppLogs) (suppByDate[l.date] ||= []).push(l);
 

@@ -2,10 +2,12 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, normalize, extname } from 'node:path';
-import db, { setup } from './src/db.js';
+import db, { setup, perf } from './src/db.js'; // PERF TEST: perf を取り込む
 import { NUTRIENTS, NUTRIENT_KEYS } from './src/nutrients.js';
 import {
   daily, series, foodFrequency, frequentFoods, isoDate, addDays,
+  loadFoodsMap, loadSupplementsMap, getMealsInRange, getSupplementLogsInRange,
+  invalidateFoods, invalidateSupplements,
 } from './src/nutrition.js';
 import { estimateFood } from './src/llm.js';
 import { buildExport, applyImport } from './src/dataio.js';
@@ -117,6 +119,28 @@ export async function handleApi(req, res, url) {
     return sendJson(res, 200, { nutrients: NUTRIENTS, today: isoDate(new Date()) });
   }
 
+  // PERF TEST: DB単体のレイテンシ計測用の一時エンドポイント。
+  // neon() は 1クエリ=1 HTTP往復なので、query1Ms/query2Ms がほぼ純粋な往復時間になる。
+  // 計測が終わったら（切り分け完了後）このブロックごと削除してよい。
+  if (p === '/api/db-speed' && method === 'GET') {
+    const r1 = (n) => Math.round(n * 10) / 10;
+    const t0 = performance.now();
+    const nowRow = await db.prepare('SELECT NOW() AS now').get();      // 1往復目
+    const t1 = performance.now();
+    const dbRow = await db.prepare('SELECT current_database() AS db').get(); // 2往復目
+    const t2 = performance.now();
+    return sendJson(res, 200, {
+      dbMs: r1(t2 - t0),          // 2クエリ合計のDB時間
+      query1Ms: r1(t1 - t0),      // SELECT NOW()           の1往復
+      query2Ms: r1(t2 - t1),      // SELECT current_database() の1往復
+      totalMs: r1(performance.now() - t0),
+      vercelRegion: process.env.VERCEL_REGION || null, // Vercel関数のリージョン
+      now: nowRow.now,
+      database: dbRow.db,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   // 初回セットアップ（テーブル作成 + seed。冪等）
   if (p === '/api/setup' && (method === 'POST' || method === 'GET')) {
     const result = await setup();
@@ -195,6 +219,7 @@ export async function handleApi(req, res, url) {
         results.push({ name: f.name, action: 'added', matched: f.matched, relinked: relinked.changes });
       }
     }
+    invalidateFoods(); // マスタ更新: キャッシュ破棄
     return sendJson(res, 201, { added, updated, relinked: relinkedTotal, results });
   }
 
@@ -213,6 +238,7 @@ export async function handleApi(req, res, url) {
     // 同名の未登録食事を新しい食材にひも付け直す
     const relinked = await db.prepare('UPDATE meals SET foodId = ?, isUnregistered = 0, updatedAt = ? WHERE foodName = ? AND isUnregistered = 1 RETURNING id')
       .run(newId, now(), body.name);
+    invalidateFoods(); // マスタ更新: キャッシュ破棄
     const row = await db.prepare('SELECT * FROM foods WHERE id = ?').get(newId);
     return sendJson(res, 201, { ...row, isEstimated: !!row.isEstimated, relinked: relinked.changes });
   }
@@ -236,11 +262,13 @@ export async function handleApi(req, res, url) {
         body.isEstimated ? 1 : 0, now(), id,
       ];
       await db.prepare(`UPDATE foods SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+      invalidateFoods(); // マスタ更新: キャッシュ破棄
       const row = await db.prepare('SELECT * FROM foods WHERE id = ?').get(id);
       return sendJson(res, 200, { ...row, isEstimated: !!row.isEstimated });
     }
     if (method === 'DELETE') {
       await db.prepare('DELETE FROM foods WHERE id = ?').run(id);
+      invalidateFoods(); // マスタ更新: キャッシュ破棄
       return sendJson(res, 200, { ok: true });
     }
   }
@@ -269,6 +297,7 @@ export async function handleApi(req, res, url) {
       body.dataSource || '', body.note || '', body.isEstimated ? 1 : 0, now(), now(),
     ];
     const info = await db.prepare(`INSERT INTO supplements (${cols.join(',')}) VALUES (${cols.map(() => '?').join(',')}) RETURNING id`).run(...params);
+    invalidateSupplements(); // マスタ更新: キャッシュ破棄
     const row = await db.prepare('SELECT * FROM supplements WHERE id = ?').get(info.lastInsertRowid);
     return sendJson(res, 201, { ...row, isEstimated: !!row.isEstimated });
   }
@@ -291,11 +320,13 @@ export async function handleApi(req, res, url) {
         body.isEstimated ? 1 : 0, now(), id,
       ];
       await db.prepare(`UPDATE supplements SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+      invalidateSupplements(); // マスタ更新: キャッシュ破棄
       const row = await db.prepare('SELECT * FROM supplements WHERE id = ?').get(id);
       return sendJson(res, 200, { ...row, isEstimated: !!row.isEstimated });
     }
     if (method === 'DELETE') {
       await db.prepare('DELETE FROM supplements WHERE id = ?').run(id);
+      invalidateSupplements(); // マスタ更新: キャッシュ破棄
       return sendJson(res, 200, { ok: true });
     }
   }
@@ -525,14 +556,29 @@ export async function handleApi(req, res, url) {
   // --- dashboard ---
   if (p === '/api/dashboard' && method === 'GET') {
     const date = q.get('date') || isoDate(new Date());
-    const today = await daily(date);
-    const week = await series(addDays(date, -6), date);
-    const month = await series(addDays(date, -29), date);
-    const goals = await db.prepare('SELECT * FROM goals WHERE id = 1').get();
-    const freq = await foodFrequency(addDays(date, -29), date, 10);
-    const energy = await db.prepare('SELECT * FROM daily_energy WHERE date = ?').get(date) || null;
-    const latestBody = await db.prepare('SELECT * FROM body_records ORDER BY date DESC LIMIT 1').get() || null;
-    return sendJson(res, 200, { date, today, week, month, goals, foodFrequency: freq, energy, latestBody });
+    const monthStart = addDays(date, -29);
+    // マスタ・レコードを1回ずつ「並列」で取得し、日/週/月で使い回す。
+    // 週・当日の範囲は月範囲(monthStart..date)の部分集合なので meals/suppLogs は1回の取得で足りる。
+    // 旧: daily+series×2 が各自ロード → 直列16往復。新: 独立クエリ8本を並列（壁時計 ≈ 1往復）。
+    const [foodsById, suppById, meals, suppLogs, goals, freq, energy, latestBody] = await Promise.all([
+      loadFoodsMap(),
+      loadSupplementsMap(),
+      getMealsInRange(monthStart, date),
+      getSupplementLogsInRange(monthStart, date),
+      db.prepare('SELECT * FROM goals WHERE id = 1').get(),
+      foodFrequency(monthStart, date, 10),
+      db.prepare('SELECT * FROM daily_energy WHERE date = ?').get(date),
+      db.prepare('SELECT * FROM body_records ORDER BY date DESC LIMIT 1').get(),
+    ]);
+    // ctx を渡すと daily/series は追加のDBアクセスをせず、上のデータをJSでフィルタするだけ。
+    const ctx = { foodsById, suppById, meals, suppLogs };
+    const today = await daily(date, ctx);
+    const week = await series(addDays(date, -6), date, ctx);
+    const month = await series(monthStart, date, ctx);
+    return sendJson(res, 200, {
+      date, today, week, month, goals,
+      foodFrequency: freq, energy: energy || null, latestBody: latestBody || null,
+    });
   }
 
   // --- goals ---
@@ -620,6 +666,7 @@ export async function handleApi(req, res, url) {
     if (!buf.length) return sendError(res, 400, 'ZIPファイルが空です');
     try {
       const result = await applyImport(buf, { mode: q.get('mode'), importGoals: q.get('goals') === '1' });
+      invalidateFoods(); invalidateSupplements(); // インポートでマスタが変わりうる: キャッシュ破棄
       return sendJson(res, 200, result);
     } catch (e) {
       return sendError(res, 400, `インポートに失敗しました: ${e.message}`);
@@ -633,6 +680,8 @@ export async function handleApi(req, res, url) {
 // 全リクエストを捌くハンドラ。静的配信も /api/* もこの1関数が処理する。
 async function requestListener(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const perfT0 = performance.now(); // PERF TEST
+  if (perf.enabled) perf.reset();   // PERF TEST: リクエストごとにSQL計測をリセット
   try {
     if (url.pathname.startsWith('/api/')) {
       await handleApi(req, res, url);
@@ -642,6 +691,13 @@ async function requestListener(req, res) {
   } catch (e) {
     console.error(e);
     if (!res.headersSent) sendError(res, 500, e.message || 'サーバーエラー');
+  } finally {
+    // PERF TEST: 1リクエストで発行したSQL回数・DB合計時間・全体時間をまとめて出力。
+    if (perf.enabled && url.pathname.startsWith('/api/')) {
+      const r = perf.report();
+      const totalMs = performance.now() - perfT0;
+      console.log(`[PERF] === ${req.method} ${url.pathname} — SQL ${r.count}回 / DB ${r.totalMs.toFixed(1)}ms / 全体 ${totalMs.toFixed(1)}ms ===`);
+    }
   }
 }
 

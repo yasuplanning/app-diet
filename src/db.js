@@ -51,20 +51,51 @@ function remap(row) {
   return out;
 }
 
+// PERF TEST: SQLごとの実行時間・件数を計測する。
+// neon() は「1クエリ = 1 HTTP往復」なので、ここで測る ms はほぼネットワーク往復時間に等しい。
+// 本番で常時ログすると煩いので、ローカル(!VERCEL) か PERF_LOG=1 のときだけ有効化する。
+export const perf = {
+  enabled: process.env.PERF_LOG === '1' || !process.env.VERCEL,
+  events: [], // { label, ms, rows }
+  reset() { this.events = []; },
+  push(label, ms, rows) {
+    if (!this.enabled) return;
+    this.events.push({ label, ms, rows });
+    console.log(`[PERF] #${this.events.length} ${label}: ${ms.toFixed(1)}ms rows=${rows}`);
+  },
+  report() {
+    const totalMs = this.events.reduce((s, e) => s + e.ms, 0);
+    return { count: this.events.length, totalMs, events: this.events };
+  },
+};
+// SQL文から「動詞 + テーブル名」の短いラベルを作る（loadUsers: 82ms 形式のため）。
+function perfLabel(sql) {
+  const m = /\b(SELECT|INSERT|UPDATE|DELETE)\b[\s\S]*?\b(?:FROM|INTO|UPDATE)\s+"?([a-z_]+)"?/i.exec(sql);
+  return m ? `${m[1].toUpperCase()} ${m[2]}` : sql.replace(/\s+/g, ' ').slice(0, 40);
+}
+// PERF TEST: 実際のクエリ実行を計測でラップする。
+async function runTimed(q, params) {
+  if (!perf.enabled) return getSql()(q, params);
+  const t0 = performance.now();
+  const rows = await getSql()(q, params);
+  perf.push(perfLabel(q), performance.now() - t0, rows.length);
+  return rows;
+}
+
 // SQLite 風の同期 API（db.prepare(sql).get/all/run）を非同期で再現。
 export function prepare(text) {
   const q = toPg(text);
   return {
     async get(...params) {
-      const rows = await getSql()(q, params);
+      const rows = await runTimed(q, params); // PERF TEST
       return remap(rows[0]);
     },
     async all(...params) {
-      const rows = await getSql()(q, params);
+      const rows = await runTimed(q, params); // PERF TEST
       return rows.map(remap);
     },
     async run(...params) {
-      const rows = await getSql()(q, params);
+      const rows = await runTimed(q, params); // PERF TEST
       // INSERT ... RETURNING id なら rows[0].id、UPDATE/DELETE ... RETURNING id なら rows.length が件数。
       return { rows: rows.map(remap), changes: rows.length, lastInsertRowid: rows[0]?.id };
     },

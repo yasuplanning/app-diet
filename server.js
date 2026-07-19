@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, normalize, extname } from 'node:path';
@@ -12,6 +13,8 @@ import {
 import { estimateFood } from './src/llm.js';
 import { buildExport, applyImport } from './src/dataio.js';
 import { parseFoodsText } from './src/parse.js';
+// 判定ロジックはブラウザと共用（public/ 配下に置いてあるのはブラウザから import させるため）。
+import { nutrientJudge } from './public/shared/judge.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, 'public');
@@ -53,6 +56,27 @@ async function readRawBody(req) {
   return Buffer.concat(chunks);
 }
 const now = () => new Date().toISOString();
+
+// ---------- 認証 ----------
+// 環境変数 API_TOKEN が設定されているときだけ /api/* にトークンを要求する。
+// 未設定なら従来どおり素通し（ローカル開発をそのまま動かすため）。
+// トークンは x-api-token ヘッダ、または ?token=（<img>/ダウンロード遷移などヘッダを
+// 付けられない経路のため）で渡す。
+function tokenOk(req, url) {
+  const expected = process.env.API_TOKEN;
+  if (!expected) return true; // 認証無効
+  const got = req.headers['x-api-token'] || url.searchParams.get('token') || '';
+  return timingSafeEqualStr(String(got), expected);
+}
+// 文字列比較のタイミング差から桁を推測されないよう、長さに依存しない比較にする。
+function timingSafeEqualStr(a, b) {
+  const ab = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  // 長さが違うと timingSafeEqual が例外を投げるので、固定長のハッシュに揃えてから比較する。
+  const ah = createHash('sha256').update(ab).digest();
+  const bh = createHash('sha256').update(bb).digest();
+  return timingSafeEqual(ah, bh);
+}
 
 // 食材名から食材マスタを解決（正式名 → 別名）
 async function resolveFood(name) {
@@ -113,6 +137,9 @@ export async function handleApi(req, res, url) {
   const p = url.pathname;
   const q = url.searchParams;
   const method = req.method;
+
+  // API_TOKEN 設定時は全 /api/* にトークンを要求する（/api/setup も含む）。
+  if (!tokenOk(req, url)) return sendError(res, 401, 'アクセストークンが必要です');
 
   // メタ情報
   if (p === '/api/meta' && method === 'GET') {
@@ -551,6 +578,53 @@ export async function handleApi(req, res, url) {
     const [y, mo] = month.split('-').map(Number);
     const end = isoDate(new Date(y, mo, 0)); // 月末
     return sendJson(res, 200, await series(start, end));
+  }
+
+  // --- widget（スマホウィジェット用の軽量エンドポイント）---
+  // ダッシュボードと違い当日1日分しか集計しないため、ウィジェットの定期取得でも軽い。
+  // 端末のローカル日付とサーバー(UTC)の日付がずれるので、date は端末側から渡す想定。
+  if (p === '/api/widget/today' && method === 'GET') {
+    const date = q.get('date') || isoDate(new Date());
+    const [day, goals, unreg] = await Promise.all([
+      daily(date),
+      db.prepare('SELECT * FROM goals WHERE id = 1').get(),
+      db.prepare('SELECT COUNT(DISTINCT foodName)::int AS n FROM meals WHERE isUnregistered = 1').get(),
+    ]);
+    const calMeta = NUTRIENTS.find((n) => n.key === 'calories');
+    const cal = day.total.calories;
+    const j = nutrientJudge(calMeta, cal, goals || {});
+    return sendJson(res, 200, {
+      date,
+      calories: cal ? cal.value : 0,
+      ref: j ? j.ref : null,
+      status: j ? j.status : null,
+      percent: j ? Math.round(j.ratio * 100) : null,
+      partial: cal ? !!cal.partial : false,
+      unregisteredCount: unreg ? unreg.n : 0,
+    });
+  }
+
+  // ウィジェットからのワンタップ記録用。既存の /api/meals と同じ登録処理だが、
+  // GET + クエリだけで完結するので Tasker 等の HTTP Request から呼びやすい。
+  // 例: /api/widget/log?food=ごはん&grams=150&date=2026-07-19
+  if (p === '/api/widget/log' && method === 'GET') {
+    const foodName = (q.get('food') || '').trim();
+    const grams = Number(q.get('grams'));
+    const date = q.get('date') || isoDate(new Date());
+    if (!foodName || !isFinite(grams) || grams <= 0) {
+      return sendError(res, 400, 'food と grams（正の数）は必須です');
+    }
+    const food = await resolveFood(foodName);
+    await db.prepare(`INSERT INTO meals (date, time, foodId, foodName, grams, memo, photo, isUnregistered, createdAt, updatedAt)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      date, q.get('time') || '', food ? food.id : null, foodName, grams, '', null, food ? 0 : 1, now(), now(),
+    );
+    const day = await daily(date);
+    return sendJson(res, 200, {
+      ok: true, foodName, grams, date,
+      registered: !!food, // false = 食材マスタに無い（あとで「未登録」画面から栄養データを補完）
+      calories: day.total.calories ? day.total.calories.value : 0,
+    });
   }
 
   // --- dashboard ---

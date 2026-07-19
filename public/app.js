@@ -1,12 +1,39 @@
 // ===== 栄養管理アプリ フロントエンド (vanilla JS SPA) =====
 
+// 不足・過剰の判定はサーバー(ウィジェット用API)と共用の実装を使う。
+import { nutrientJudge } from '/shared/judge.js';
+
 // ---------- API ----------
+// アクセストークン。サーバー側で API_TOKEN が設定されている場合のみ必要になる。
+// 初回は ?token=... 付きURLで開くか、401時に出るプロンプトで入力すると localStorage に保存される。
+const TOKEN_KEY = 'apiToken';
+function saveTokenFromUrl() {
+  const m = location.search.match(/[?&]token=([^&]+)/);
+  if (!m) return;
+  localStorage.setItem(TOKEN_KEY, decodeURIComponent(m[1]));
+  // トークンをURL(＝履歴・共有リンク)に残さないよう、保存後は取り除く。
+  history.replaceState(null, '', location.pathname + location.hash);
+}
+// ブラウザのダウンロード遷移（エクスポート）はヘッダを付けられないため、トークンをクエリに載せる。
+function withToken(url) {
+  const t = localStorage.getItem(TOKEN_KEY);
+  if (!t) return url;
+  return url + (url.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(t);
+}
+function promptToken() {
+  const t = window.prompt('アクセストークンを入力してください（サーバーの API_TOKEN）');
+  if (t) { localStorage.setItem(TOKEN_KEY, t.trim()); location.reload(); }
+}
+
 const api = {
   async req(method, path, body) {
     const opt = { method, headers: {} };
+    const token = localStorage.getItem(TOKEN_KEY);
+    if (token) opt.headers['x-api-token'] = token;
     if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
     const res = await fetch(path, opt);
     const data = await res.json().catch(() => ({}));
+    if (res.status === 401) { promptToken(); throw new Error(data.error || '認証が必要です'); }
     if (!res.ok) throw new Error(data.error || `エラー ${res.status}`);
     return data;
   },
@@ -81,23 +108,6 @@ function nutrientCell(obj) {
   if (!obj) return '—';
   const v = num(obj.value, 1);
   return obj.partial ? `${v} <span class="pill partial" title="一部の食材で栄養データが未登録です">一部未登録</span>` : v;
-}
-
-// 栄養素の不足・過剰判定。目安は目標設定値を優先し、無ければ栄養素既定の推奨量。
-// 食塩など上限系(n.limit)は「超えたら過剰」、それ以外は 0.5倍未満で不足・1.5倍超で過剰。
-// 目安が無い栄養素・摂取値が無い場合は null（＝判定しない）を返す。
-// 履歴の不足・過剰チェックとダッシュボードで共用するため、変更はここ1箇所で済ませる。
-function nutrientJudge(n, obj, goals = {}) {
-  const ref = (n.key === 'calories' && goals.targetCalories) || (n.key === 'protein' && goals.targetProtein)
-    || (n.key === 'fiber' && goals.targetFiber) || (n.key === 'salt' && goals.saltLimit) || n.ref;
-  if (!obj || !ref) return null;
-  const ratio = obj.value / ref;
-  if (n.limit || n.key === 'salt') { // 上限系
-    return ratio > 1 ? { ref, status: '過剰', cls: 'status-over' } : { ref, status: '適正', cls: 'status-ok' };
-  }
-  if (ratio < 0.5) return { ref, status: '不足', cls: 'status-low' };
-  if (ratio > 1.5) return { ref, status: '過剰', cls: 'status-over' };
-  return { ref, status: '適正', cls: 'status-ok' };
 }
 
 // 全栄養素テーブル
@@ -546,7 +556,7 @@ async function viewHistoryDay(date) {
         <td><button class="ghost sm" data-supedit="${r.id}">編集</button> <button class="ghost sm" data-supdel="${r.id}">削除</button></td>
       </tr>` : `<tr>
         <td>${esc(r.time || '')}</td>
-        <td>${r.hasPhoto ? `<img src="/api/meals/${r.id}/photo" alt="写真" data-photo="${r.id}" style="height:34px;width:34px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:6px;cursor:pointer">` : ''}${esc(r.foodName)} ${r.nutrients ? '<span class="pill">1食記録</span>' : (r.isUnregistered ? '<span class="pill unreg">未登録</span>' : '')}</td>
+        <td>${r.hasPhoto ? `<img src="${withToken(`/api/meals/${r.id}/photo`)}" alt="写真" data-photo="${r.id}" style="height:34px;width:34px;object-fit:cover;border-radius:6px;vertical-align:middle;margin-right:6px;cursor:pointer">` : ''}${esc(r.foodName)} ${r.nutrients ? '<span class="pill">1食記録</span>' : (r.isUnregistered ? '<span class="pill unreg">未登録</span>' : '')}</td>
         <td class="num">${r.nutrients ? '1食' : `${num(r.grams, 0)}g`}</td><td class="muted small">${esc(r.memo || '')}</td>
         <td><button class="ghost sm" data-edit="${r.id}">編集</button> <button class="ghost sm" data-del="${r.id}">削除</button></td>
       </tr>`;
@@ -564,7 +574,7 @@ async function viewHistoryDay(date) {
   // 写真サムネのクリックで拡大表示。
   app.querySelectorAll('[data-photo]').forEach((im) => im.addEventListener('click', () => {
     const node = el(`<div class="modal" style="text-align:center">
-      <img src="/api/meals/${im.dataset.photo}/photo" alt="写真" style="max-width:100%;max-height:78vh;border-radius:8px">
+      <img src="${withToken(`/api/meals/${im.dataset.photo}/photo`)}" alt="写真" style="max-width:100%;max-height:78vh;border-radius:8px">
       <div class="row" style="margin-top:12px;justify-content:center"><button class="ghost" id="ph-close">閉じる</button></div>
     </div>`);
     node.querySelector('#ph-close').onclick = closeModal;
@@ -647,7 +657,7 @@ function openMealEditor(meal, onSaved) {
       <textarea id="me-nutrients" rows="6" style="width:100%;font-family:monospace" placeholder="カロリー&#10;約800 kcal&#10;タンパク質&#10;約40 g&#10;…"></textarea>` : ''}
     <label>写真</label>
     <div>
-      ${meal.hasPhoto ? `<img src="/api/meals/${meal.id}/photo" alt="写真" style="max-height:120px;border-radius:8px;display:block">
+      ${meal.hasPhoto ? `<img src="${withToken(`/api/meals/${meal.id}/photo`)}" alt="写真" style="max-height:120px;border-radius:8px;display:block">
         <label style="display:flex;align-items:center;gap:6px;margin-top:6px"><input type="checkbox" id="me-photo-del" style="width:auto"> 写真を削除する</label>` : ''}
       <input type="file" id="me-photo-file" accept="image/*" capture="environment" style="margin-top:6px">
       <div id="me-photo-preview"></div>
@@ -1177,13 +1187,13 @@ async function viewGoals() {
 
   // --- エクスポート（ブラウザのダウンロード）---
   $('#ex-masters').onclick = () => {
-    window.location.href = `/api/export?scope=masters`;
+    window.location.href = withToken(`/api/export?scope=masters`);
     toast('マスタのエクスポートを開始しました');
   };
   $('#ex-records').onclick = () => {
     const s = $('#ex-start').value, e = $('#ex-end').value;
     if (s && e && s > e) { toast('開始日は終了日より前にしてください', true); return; }
-    window.location.href = `/api/export?scope=records&start=${encodeURIComponent(s)}&end=${encodeURIComponent(e)}`;
+    window.location.href = withToken(`/api/export?scope=records&start=${encodeURIComponent(s)}&end=${encodeURIComponent(e)}`);
     toast('記録のエクスポートを開始しました');
   };
 
@@ -1197,9 +1207,10 @@ async function viewGoals() {
     const btn = $('#im-btn'); btn.disabled = true; btn.textContent = '取り込み中…';
     try {
       const buf = await file.arrayBuffer();
-      const res = await fetch(`/api/import?mode=${mode}&goals=${goals}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/zip' }, body: buf,
-      });
+      const hdr = { 'Content-Type': 'application/zip' };
+      const tk = localStorage.getItem(TOKEN_KEY);
+      if (tk) hdr['x-api-token'] = tk;
+      const res = await fetch(`/api/import?mode=${mode}&goals=${goals}`, { method: 'POST', headers: hdr, body: buf });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'インポート失敗');
       const s = data.summary;
@@ -1224,7 +1235,14 @@ async function viewGoals() {
 
 // ---------- boot ----------
 (async function boot() {
-  META = await api.get('/api/meta');
+  saveTokenFromUrl();
+  try {
+    META = await api.get('/api/meta');
+  } catch (e) {
+    // 認証エラーならプロンプト（promptToken）が出ているので、その旨だけ表示して終了。
+    app.innerHTML = `<div class="card"><p class="status-over">${esc(e.message)}</p></div>`;
+    return;
+  }
   window.addEventListener('hashchange', router);
   // 同じ画面のナビをタップした場合（hashchange が発火しない）でも再描画する。
   // これにより食事入力を開き直すたびに時刻が現在時刻へリセットされる。

@@ -83,6 +83,23 @@ function nutrientCell(obj) {
   return obj.partial ? `${v} <span class="pill partial" title="一部の食材で栄養データが未登録です">一部未登録</span>` : v;
 }
 
+// 栄養素の不足・過剰判定。目安は目標設定値を優先し、無ければ栄養素既定の推奨量。
+// 食塩など上限系(n.limit)は「超えたら過剰」、それ以外は 0.5倍未満で不足・1.5倍超で過剰。
+// 目安が無い栄養素・摂取値が無い場合は null（＝判定しない）を返す。
+// 履歴の不足・過剰チェックとダッシュボードで共用するため、変更はここ1箇所で済ませる。
+function nutrientJudge(n, obj, goals = {}) {
+  const ref = (n.key === 'calories' && goals.targetCalories) || (n.key === 'protein' && goals.targetProtein)
+    || (n.key === 'fiber' && goals.targetFiber) || (n.key === 'salt' && goals.saltLimit) || n.ref;
+  if (!obj || !ref) return null;
+  const ratio = obj.value / ref;
+  if (n.limit || n.key === 'salt') { // 上限系
+    return ratio > 1 ? { ref, status: '過剰', cls: 'status-over' } : { ref, status: '適正', cls: 'status-ok' };
+  }
+  if (ratio < 0.5) return { ref, status: '不足', cls: 'status-low' };
+  if (ratio > 1.5) return { ref, status: '過剰', cls: 'status-over' };
+  return { ref, status: '適正', cls: 'status-ok' };
+}
+
 // 全栄養素テーブル
 function nutrientTable(total) {
   const rows = META.nutrients.map((n) => {
@@ -130,10 +147,11 @@ async function router() {
 // ======================================================
 async function viewDashboard() {
   const date = todayStr();
-  const [d, bodyRecs, energyRecs] = await Promise.all([
+  const [d, bodyRecs, energyRecs, unreg] = await Promise.all([
     api.get(`/api/dashboard?date=${date}`),
     api.get('/api/body'),
     api.get('/api/energy'),
+    api.get('/api/meals/unregistered'),
   ]);
 
   // 過去1週間（d.week は date を末尾とする直近7日）を、体重・体脂肪率・カロリー収支に整形。
@@ -151,8 +169,26 @@ async function viewDashboard() {
     };
   });
 
+  // 今日の摂取カロリー（履歴の「不足・過剰チェック」と同じ値・同じ判定基準）
+  const calMeta = META.nutrients.find((n) => n.key === 'calories');
+  const cal = d.today.total.calories;
+  const calJudge = nutrientJudge(calMeta, cal, d.goals || {});
+
   app.innerHTML = `
     <h1>ホーム / ダッシュボード <span class="muted small">(${date})</span></h1>
+
+    <div class="grid grid-2">
+      <div class="stat">
+        <div class="label">未登録食材</div>
+        <div class="value">${unreg.length}<small>件</small></div>
+        <div class="sub">${unreg.length ? '<a href="#/unregistered">確認して登録する →</a>' : '<span class="muted">すべて登録済み 🎉</span>'}</div>
+      </div>
+      <div class="stat">
+        <div class="label">今日の摂取カロリー</div>
+        <div class="value">${nutrientCell(cal)}<small>kcal</small></div>
+        <div class="sub">${calJudge ? `<span class="${calJudge.cls}">${calJudge.status}</span> <span class="muted">/ 目安 ${calJudge.ref}kcal</span> ` : ''}<a href="#/history">詳細 →</a></div>
+      </div>
+    </div>
 
     <div class="card"><h2>1週間の推移 <span class="muted small">(${d.week.start} 〜 ${d.week.end})</span></h2>
       <div class="chart-title">体重（棒）・体脂肪率（棒）</div>
@@ -455,20 +491,10 @@ async function viewHistory() {
 
   // 指定日の集計 total に対して不足・過剰を判定するテーブル行を返す。
   const checkRows = (total) => META.nutrients.map((n) => {
-    const o = total[n.key]; if (!o) return '';
-    const ref = (n.key === 'calories' && g.targetCalories) || (n.key === 'protein' && g.targetProtein)
-      || (n.key === 'fiber' && g.targetFiber) || (n.key === 'salt' && g.saltLimit) || n.ref;
-    if (!ref) return '';
-    const ratio = o.value / ref;
-    let status = '', cls = 'status-ok';
-    if (n.limit || n.key === 'salt') { // 上限系
-      if (ratio > 1) { status = '過剰'; cls = 'status-over'; } else { status = '適正'; cls = 'status-ok'; }
-    } else {
-      if (ratio < 0.5) { status = '不足'; cls = 'status-low'; }
-      else if (ratio > 1.5) { status = '過剰'; cls = 'status-over'; }
-      else { status = '適正'; cls = 'status-ok'; }
-    }
-    return `<tr><td>${n.label}</td><td class="num">${nutrientCell(o)}</td><td class="num muted">${ref}${n.unit}</td><td class="${cls}">${status}</td></tr>`;
+    const o = total[n.key];
+    const j = nutrientJudge(n, o, g);
+    if (!j) return '';
+    return `<tr><td>${n.label}</td><td class="num">${nutrientCell(o)}</td><td class="num muted">${j.ref}${n.unit}</td><td class="${j.cls}">${j.status}</td></tr>`;
   }).join('');
 
   const day = await api.get(`/api/nutrition/daily?date=${date}`);
